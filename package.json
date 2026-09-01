@@ -1,0 +1,28 @@
+{
+  "name": "ccdesk",
+  "version": "0.0.1",
+  "description": "A small local UI for Claude Code — pick a project, browse past conversations, and continue one in a dedicated window.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "ccdesk": "./server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "server.js",
+    "lib/",
+    "public/",
+    "README.md"
+  ],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "ui",
+    "cli"
+  ],
+  "scripts": {
+    "start": "node server.js"
+  }
+}
