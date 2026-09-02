@@ -28,10 +28,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/junhyunp/ccdesk.git"
+    "url": "git+https://github.com/Junhyunp/ccdesk.git"
   },
   "bugs": {
-    "url": "https://github.com/junhyunp/ccdesk/issues"
+    "url": "https://github.com/Junhyunp/ccdesk/issues"
   },
-  "homepage": "https://github.com/junhyunp/ccdesk#readme"
+  "homepage": "https://github.com/Junhyunp/ccdesk#readme"
 }
