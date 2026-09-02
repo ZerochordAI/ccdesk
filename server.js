@@ -18,6 +18,7 @@ import { spawn } from 'node:child_process'
 
 import { scanAll, listUnderRoot, listSessions } from './lib/sessions.js'
 import { readMessages, readSince } from './lib/transcript.js'
+import { getTitles, setTitle, applyTitles } from './lib/titles.js'
 import { normalizeHistory } from './public/normalize.js'
 
 // 이 시간 안에 파일이 갱신됐으면 어딘가에서 쓰고 있는 중일 수 있다고 본다.
@@ -148,15 +149,26 @@ async function handleApi(req, res, url) {
     else if (scope === 'project' && path) sessions = (await listSessions(path)).sessions
     else sessions = (await scanAll()).sessions
     const now = Date.now()
+    const titles = await getTitles()
+    // 이름을 먼저 입히고 나서 걸러야, 사용자가 붙인 이름으로도 검색된다.
+    const named = applyTitles(sessions, titles)
     return sendJson(res, 200, {
       scope,
       path,
-      sessions: sessions
+      sessions: named
         .filter((s) => matchQuery(s, q))
         .map((s) => ({ ...s, recentlyActive: now - Date.parse(s.mtime) < LIVE_WINDOW_MS })),
       roots: suggestRoots(await allSessions()),
       openSessionIds: [...runs.values()].map((r) => r.sessionId),
     })
+  }
+
+  const tm = p.match(/^\/api\/sessions\/([^/]+)\/title$/)
+  if (tm && req.method === 'PUT') {
+    const b = await readBody(req)
+    const saved = await setTitle(decodeURIComponent(tm[1]), b.title)
+    cache = null // 목록 캐시를 비워 다음 조회에 바로 반영되게
+    return sendJson(res, 200, { title: saved, renamed: Boolean(saved) })
   }
 
   const mm = p.match(/^\/api\/sessions\/([^/]+)\/messages$/)

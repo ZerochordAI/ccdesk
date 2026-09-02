@@ -177,6 +177,16 @@ function renderList() {
         live.title = '방금 갱신된 세션입니다. 터미널 등 다른 곳에서 쓰고 있을 수 있습니다.'
         m.append(' ', live)
       }
+      const pen = document.createElement('button')
+      pen.className = 'pen'
+      pen.textContent = '✎'
+      pen.title = s.renamed ? '이름 바꾸기 (원래: ' + s.originalTitle + ')' : '이름 바꾸기'
+      pen.onclick = (e) => {
+        e.stopPropagation()
+        renameSession(s.id, s.title)
+      }
+      t.append(pen)
+
       el.append(t, m)
       el.title = s.preview || s.title
       el.onclick = () => openSession(s)
@@ -187,6 +197,33 @@ function renderList() {
   }
 
   $('count').textContent = groups.size + '개 프로젝트 · ' + state.sessions.length + '개 세션'
+}
+
+/**
+ * 대화 이름 바꾸기.
+ * 기록 파일에는 쓰지 않는다 — CLI 가 쥐고 있는 파일이라 끼어들면 위험하다.
+ * 바꾼 이름은 ccdesk 가 따로 보관하므로 터미널 쪽 목록에는 원래 제목이 그대로 남는다.
+ */
+async function renameSession(sessionId, current) {
+  if (!sessionId) {
+    alert('아직 시작하지 않은 대화입니다. 한 번 보내고 나서 이름을 붙일 수 있습니다.')
+    return
+  }
+  const next = prompt('대화 이름 (비우면 원래 제목으로 돌아갑니다)', current || '')
+  if (next === null) return
+  try {
+    const data = await api('/api/sessions/' + encodeURIComponent(sessionId) + '/title', {
+      method: 'PUT',
+      body: JSON.stringify({ title: next }),
+    })
+    for (const t of state.tabs) {
+      if (t.sessionId === sessionId && data.title) t.title = data.title
+    }
+    renderTabs()
+    await refresh()
+  } catch (e) {
+    alert('이름을 바꾸지 못했습니다: ' + e.message)
+  }
 }
 
 // ── 탭 ────────────────────────────────────────────────────────────
@@ -216,7 +253,11 @@ function renderTabs() {
     }
     el.append(x)
     el.onclick = () => activate(tab)
-    el.title = tab.cwd || ''
+    el.ondblclick = (e) => {
+      e.preventDefault()
+      renameSession(tab.sessionId, tab.title)
+    }
+    el.title = (tab.cwd || '') + '\n두 번 누르면 이름을 바꿉니다'
     bar.append(el)
   }
 }
