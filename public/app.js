@@ -51,7 +51,10 @@ function connect() {
     const tab = state.tabs.find((t) => t.runId === payload.runId)
     if (!tab) return
     applyEvent(tab.messages, payload.ev)
-    if (payload.ev.type === 'result') tab.busy = false
+    if (payload.ev.type === 'result') {
+      tab.busy = false
+      flushQueue(tab)
+    }
     if (tab !== state.active) {
       tab.unread = true
       renderTabs()
@@ -221,10 +224,12 @@ function activate(tab) {
   $('sheet').hidden = true
   renderReadonlyBar(tab)
   renderRunInfo()
+  if (!tab) $('queue').hidden = true
   if (tab) {
     tab.unread = false
     $('input').value = tab.draft || ''
     renderAttach()
+    renderQueue()
     autosize()
     if (!tab.readonly) $('input').focus()
     markClamped(tab)
@@ -273,6 +278,9 @@ function newTab({ sessionId, cwd, title }) {
     readonly: false, // 다른 곳에서 쓰는 중이면 읽기만 한다
     timer: null,
     settings: loadDefaults(), // 모델·권한·허용도구·추가폴더. 프로세스가 뜰 때 박힌다
+    nodes: new Map(), // 메시지 id -> 그려둔 DOM. 바뀐 것만 다시 그리려고 들고 있다
+    openTools: new Set(), // 펼쳐둔 도구 블록 id
+    queue: [], // 답을 기다리는 동안 미리 쳐둔 것
   }
   el.addEventListener('scroll', () => {
     tab.follow = el.scrollHeight - el.scrollTop - el.clientHeight < 60
@@ -410,9 +418,16 @@ function mdToHtml(text) {
   return html
 }
 
-function toolEl(b) {
+function toolEl(b, tab) {
   const d = document.createElement('details')
   d.className = 'tool'
+  // 펼쳐둔 것은 다시 그려도 펼쳐진 채로 둔다. 탭이 기억한다.
+  if (tab && tab.openTools.has(b.id)) d.open = true
+  d.ontoggle = () => {
+    if (!tab) return
+    if (d.open) tab.openTools.add(b.id)
+    else tab.openTools.delete(b.id)
+  }
   const sum = document.createElement('summary')
   const arg = b.input ? JSON.stringify(b.input) : ''
   // 오류는 사유의 첫 줄까지 접힌 채로 보여준다. 접어두면 왜 막혔는지 알 수가 없다.
@@ -440,7 +455,7 @@ function toolEl(b) {
   return d
 }
 
-function msgEl(m) {
+function msgEl(m, tab) {
   const wrap = document.createElement('div')
   wrap.className = 'msg ' + m.role
   if (m.role !== 'notice') {
@@ -463,7 +478,7 @@ function msgEl(m) {
       d.textContent = b.text
       body.append(d)
     } else if (b.type === 'tool') {
-      body.append(toolEl(b))
+      body.append(toolEl(b, tab))
     } else if (b.type === 'image') {
       const img = document.createElement('img')
       img.className = 'shot'
@@ -507,24 +522,76 @@ function scheduleRender(tab) {
   })
 }
 
+/**
+ * 메시지가 바뀌었는지 싸게 알아보는 값.
+ * 흘러오는 중에는 글이 길어지고, 끝나면 streaming 이 꺼지므로 둘 다 여기서 잡힌다.
+ */
+function msgVersion(m) {
+  let s = m.role + (m.streaming ? '~' : '') + (m.meta ? 'M' : '') + m.blocks.length
+  for (const b of m.blocks) {
+    if (b.type === 'text' || b.type === 'thinking' || b.type === 'notice') s += '|' + b.type + (b.text || '').length
+    else if (b.type === 'tool') s += '|t' + b.id + b.state + (b.isError ? 'E' : '') + (b.result ? b.result.length : -1)
+    else if (b.type === 'image') s += '|i' + (b.data ? b.data.length : 0)
+  }
+  return s
+}
+
+/**
+ * 바뀐 메시지만 다시 그린다.
+ *
+ * 예전에는 이벤트가 올 때마다 전체를 지웠다 다시 그렸는데, 그러면
+ *  - 펼쳐둔 도구 블록이 도로 닫히고
+ *  - 스크롤 위치가 조금씩 어긋나다 결국 맨 위로 올라간다.
+ * 그래서 id 로 대응시켜 놔두고, 달라진 것만 갈아끼운다.
+ */
 function render(tab, keepScroll) {
   const el = tab.el
   const prevH = el.scrollHeight
   const prevTop = el.scrollTop
-  el.replaceChildren()
+  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60
 
-  if (tab.hasMore) {
-    const b = document.createElement('button')
-    b.className = 'more'
-    b.textContent = '위로 더 불러오기'
-    b.onclick = () => loadMessages(tab, tab.cursor)
-    el.append(b)
+  if (!tab.nodes) tab.nodes = new Map()
+
+  // 맨 위 "더 불러오기" 버튼
+  let head = el.firstElementChild && el.firstElementChild.classList.contains('more') ? el.firstElementChild : null
+  if (tab.hasMore && !head) {
+    head = document.createElement('button')
+    head.className = 'more'
+    head.textContent = '위로 더 불러오기'
+    head.onclick = () => loadMessages(tab, tab.cursor)
+    el.prepend(head)
+  } else if (!tab.hasMore && head) {
+    head.remove()
+    head = null
   }
-  for (const m of tab.messages) el.append(msgEl(m))
+
+  const seen = new Set()
+  let anchor = head // 이 노드 다음에 순서대로 놓는다
+  for (const m of tab.messages) {
+    seen.add(m.id)
+    const ver = msgVersion(m)
+    let rec = tab.nodes.get(m.id)
+    if (!rec || rec.ver !== ver) {
+      const node = msgEl(m, tab)
+      if (rec) rec.node.replaceWith(node)
+      rec = { node, ver }
+      tab.nodes.set(m.id, rec)
+    }
+    // 순서가 어긋난 것만 옮긴다(대개는 그대로다).
+    const want = anchor ? anchor.nextSibling : el.firstChild
+    if (rec.node !== want) el.insertBefore(rec.node, want)
+    anchor = rec.node
+  }
+  for (const [id, rec] of tab.nodes) {
+    if (!seen.has(id)) {
+      rec.node.remove()
+      tab.nodes.delete(id)
+    }
+  }
 
   if (keepScroll) el.scrollTop = prevTop + (el.scrollHeight - prevH)
-  else if (tab.follow) el.scrollTop = el.scrollHeight
-  else el.scrollTop = prevTop
+  else if (tab.follow && atBottom) el.scrollTop = el.scrollHeight
+  // 그 밖에는 건드리지 않는다. 안 건드리는 게 안 어긋나는 유일한 방법이다.
 
   markClamped(tab)
 }
@@ -725,15 +792,32 @@ async function addFiles(files) {
 
 async function send() {
   const tab = state.active
+  if (!tab || tab.readonly) return
   const text = $('input').value
-  const imgs = tab ? tab.images.slice() : []
-  if (!tab || tab.readonly || tab.busy) return
+  const imgs = tab.images.slice()
   if (!text.trim() && !imgs.length) return
-  $('input').value = ''
-  autosize()
-  tab.draft = ''
-  tab.images = []
-  renderAttach()
+
+  const clearInput = () => {
+    $('input').value = ''
+    tab.draft = ''
+    tab.images = []
+    renderAttach()
+    autosize()
+  }
+
+  // 답을 기다리는 중이면 줄을 세운다. 지금 것이 끝나면 차례로 나간다.
+  if (tab.busy) {
+    tab.queue.push({ text, images: imgs })
+    clearInput()
+    renderQueue()
+    return
+  }
+
+  clearInput()
+  deliver(tab, text, imgs)
+}
+
+async function deliver(tab, text, imgs) {
   tab.messages.push({
     id: 'u' + Date.now(),
     role: 'human',
@@ -753,7 +837,64 @@ async function send() {
     tab.busy = false
     tab.messages.push({ id: 'e' + Date.now(), role: 'notice', blocks: [{ type: 'notice', level: 'error', text: e.message }] })
     render(tab)
+    // 줄 서 있던 것은 그대로 둔다. 같은 이유로 또 실패할 테니 사용자가 보고 정하게 한다.
+    renderQueue()
   }
+}
+
+/** 앞 턴이 끝나면 줄 선 것 하나를 내보낸다. */
+function flushQueue(tab) {
+  if (tab.busy || !tab.queue.length) return
+  const next = tab.queue.shift()
+  renderQueue()
+  deliver(tab, next.text, next.images)
+}
+
+/** 대기 중인 것들. 누르면 입력칸으로 되돌려 고칠 수 있다. */
+function renderQueue() {
+  const box = $('queue')
+  const tab = state.active
+  const q = tab ? tab.queue : []
+  box.replaceChildren()
+  box.hidden = !q.length || Boolean(tab && tab.readonly)
+  if (box.hidden) return
+
+  const head = document.createElement('div')
+  head.className = 'qhead'
+  head.textContent = '대기 중 ' + q.length + '개 · 누르면 다시 고칠 수 있습니다'
+  box.append(head)
+
+  q.forEach((item, i) => {
+    const d = document.createElement('div')
+    d.className = 'qitem'
+    const t = document.createElement('span')
+    t.className = 'qtext'
+    t.textContent = (item.images.length ? '[그림 ' + item.images.length + '] ' : '') + item.text
+    const x = document.createElement('button')
+    x.textContent = '×'
+    x.title = '빼기'
+    x.onclick = (e) => {
+      e.stopPropagation()
+      tab.queue.splice(i, 1)
+      renderQueue()
+    }
+    d.append(t, x)
+    d.title = item.text
+    d.onclick = () => editQueued(tab, i)
+    box.append(d)
+  })
+}
+
+function editQueued(tab, i) {
+  const item = tab.queue.splice(i, 1)[0]
+  if (!item) return
+  const cur = $('input').value
+  $('input').value = cur ? cur + '\n' + item.text : item.text
+  tab.images = tab.images.concat(item.images)
+  renderAttach()
+  renderQueue()
+  autosize()
+  $('input').focus()
 }
 
 // ── 배선 ──────────────────────────────────────────────────────────

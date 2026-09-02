@@ -382,3 +382,49 @@ details.tool > summary .why { color: var(--bad); }
 .runinfo .on { color: var(--ok); }
 .runinfo .off { color: var(--dim); }
 .runinfo .risk { color: var(--warn); }
+
+/* ── 대기 중인 입력 ─────────────────────────────────── */
+
+.queue {
+  margin: 0 14px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.queue .qhead { font-size: 11px; color: var(--dim); }
+.queue .qitem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border: 1px dashed var(--line);
+  border-left: 2px solid var(--dim);
+  border-radius: 0 6px 6px 0;
+  background: var(--bg2);
+  cursor: pointer;
+  font-size: 12.5px;
+}
+.queue .qitem:hover { border-color: var(--accent); border-left-color: var(--accent); }
+.queue .qtext {
+  flex: 1;
+  min-width: 0;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.queue .qitem button {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  line-height: 16px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #5d646e;
+  cursor: pointer;
+}
+.queue .qitem button:hover { color: var(--bad); }
