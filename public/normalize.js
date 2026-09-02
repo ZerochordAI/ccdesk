@@ -73,22 +73,50 @@ function blocksFromContent(content) {
   return out
 }
 
-/** 같은 message.id 는 한 메시지로 합친다. jsonl 은 한 턴을 여러 줄로 쪼개 적는다. */
-function upsertAssistant(list, { id, ts, content, model }) {
+/**
+ * 같은 message.id 는 한 메시지로 합친다.
+ *
+ * 두 가지 의미가 있어서 mode 로 가른다 — 섞으면 같은 답이 두 번 나온다.
+ *  - 'append'  기록(jsonl): 한 턴을 여러 줄로 쪼개 적으므로 줄마다 블록을 **더한다**
+ *  - 'replace' 실시간(assistant 이벤트): 그 이벤트가 완성본을 통째로 싣고 오므로 **갈아끼운다**
+ */
+function upsertAssistant(list, { id, ts, content, model }, mode = 'append') {
   const blocks = blocksFromContent(content)
-  const existing = id ? list.find((m) => m.role === 'assistant' && m.id === id) : null
+  let existing = id ? list.find((m) => m.role === 'assistant' && m.id === id) : null
+
+  // 실시간인데 id 로 못 찾으면, 흘러오던 중이던 마지막 메시지를 그것으로 본다.
+  // SSE 가 끊겼다 다시 붙으면 message_start 를 놓쳐 id 를 모른 채 조각만 쌓여 있다.
+  // 이걸 안 하면 조각 메시지와 완성본이 따로 남아 같은 답이 두 번 보인다.
+  if (!existing && mode === 'replace') {
+    const live = [...list].reverse().find((m) => m.role === 'assistant' && m.streaming)
+    if (live) {
+      existing = live
+      if (id) existing.id = id
+    }
+  }
+
   if (existing) {
-    // 스트리밍으로 쌓아둔 부분 텍스트가 있으면 완성본으로 갈아끼운다.
-    if (existing.streaming) {
-      existing.blocks = existing.blocks.filter((b) => b.type === 'tool' && b.state === 'done')
+    if (mode === 'replace') {
+      // 결과가 붙은 도구 블록은 살려서 갈아끼운다. 결과는 나중에 오는 tool_result 로 채워진 것이다.
+      const done = existing.blocks.filter((b) => b.type === 'tool')
+      existing.blocks = blocks.map((b) => (b.type === 'tool' ? done.find((t) => t.id === b.id) || b : b))
       existing.streaming = false
+    } else {
+      if (existing.streaming) {
+        existing.blocks = existing.blocks.filter((b) => b.type === 'tool')
+        existing.streaming = false
+      }
+      for (const b of blocks) {
+        if (b.type === 'tool' && existing.blocks.some((x) => x.type === 'tool' && x.id === b.id)) continue
+        // 이미 실시간으로 받아둔 글을 기록에서 또 읽어오는 경우가 있다. 같은 글은 다시 넣지 않는다.
+        if (b.type === 'text' && existing.blocks.some((x) => x.type === 'text' && x.text === b.text)) continue
+        existing.blocks.push(b)
+      }
     }
-    for (const b of blocks) {
-      if (b.type === 'tool' && existing.blocks.some((x) => x.type === 'tool' && x.id === b.id)) continue
-      existing.blocks.push(b)
-    }
+    if (model && !existing.model) existing.model = model
     return existing
   }
+
   const msg = { id: id || `a${list.length}`, role: 'assistant', ts, blocks, model }
   list.push(msg)
   return msg
@@ -158,7 +186,13 @@ export function applyEvent(list, ev) {
 
   switch (ev.type) {
     case 'assistant':
-      if (ev.message) upsertAssistant(list, { id: ev.message.id, ts: new Date().toISOString(), content: ev.message.content, model: ev.message.model })
+      // 이벤트가 완성본을 통째로 싣고 온다 — 더하지 말고 갈아끼운다.
+      if (ev.message)
+        upsertAssistant(
+          list,
+          { id: ev.message.id, ts: new Date().toISOString(), content: ev.message.content, model: ev.message.model },
+          'replace'
+        )
       break
 
     case 'user': {

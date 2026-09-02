@@ -533,6 +533,16 @@ function render(tab, keepScroll) {
 
 async function ensureRun(tab) {
   if (tab.runId) return tab.runId
+  // 따라 읽기 지점을 파일 끝으로 당겨둔다. 안 그러면 SSE 로 받은 턴을
+  // 나중에 기록에서 또 읽어와 같은 말이 두 번 쌓인다.
+  if (tab.sessionId) {
+    try {
+      const t = await api('/api/sessions/' + encodeURIComponent(tab.sessionId) + '/messages?after=' + tab.offset)
+      tab.offset = t.offset
+    } catch {
+      /* 못 당겨도 정규화 쪽에서 걸러진다 */
+    }
+  }
   const s = tab.settings
   const data = await api('/api/runs', {
     method: 'POST',

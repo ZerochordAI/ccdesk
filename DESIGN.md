@@ -83,11 +83,21 @@ block =
 - `isSidechain === true` — 서브에이전트 대화. 목록에도 본문에도 넣지 않는다
 - `attachment` / `file-history-*` / `atis-latch` 등 메타 라인
 
-### ⚠️ 미확인
+### ✅ stream_event 내부 (2026-09-02 실측)
 
-`stream_event` **내부** 모양은 확인하지 않았다. HANDOFF 는 이벤트 **이름**까지만 실측했다.
-`content_block_delta` / `text_delta` 를 가정하고 방어적으로 짰다.
-**1단계에서 실제 이벤트를 찍어보고 이 절을 갱신할 것.**
+찍어보니 이렇게 온다:
+
+- 종류: `message_start` · `content_block_start` · `content_block_delta` · `content_block_stop` · `message_delta` · `message_stop`
+- 델타: `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"..."}}`
+- **`message_start` 의 `message.id` 는 뒤에 오는 `assistant` 이벤트의 id 와 같다.**
+
+⚠️ 다만 **그 id 를 믿고만 있으면 안 된다.** SSE 가 끊겼다 다시 붙으면(EventSource 는 자동 재연결한다)
+`message_start` 를 놓친 채 델타부터 받게 되고, 그러면 조각으로 만든 임시 메시지와 완성본이
+따로 남아 **같은 답이 두 번 보인다.** 그래서 `assistant` 이벤트는 id 로 못 찾으면
+흘러오던 중이던 마지막 메시지를 그것으로 본다.
+
+또 하나 — `assistant` 이벤트는 완성본을 통째로 싣고 오므로 **갈아끼워야** 하고,
+jsonl 은 한 턴을 여러 줄로 쪼개 적으므로 **더해야** 한다. 이 둘을 같은 코드로 처리하면 글이 두 번 쌓인다.
 
 ---
 
