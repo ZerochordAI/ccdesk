@@ -361,17 +361,19 @@ function newTab({ sessionId, cwd, title }) {
     openTools: new Set(), // 펼쳐둔 도구 블록 id
     queue: [], // 답을 기다리는 동안 미리 쳐둔 것
     interrupted: false, // 사용자가 끊었으면 대기줄을 자동으로 내보내지 않는다
-    autoScrolling: false, // 우리가 내리는 중 — 스크롤 이벤트를 사용자 것으로 세지 않는다
     startedAt: 0, // 지금 턴을 언제 보냈나 (구동 시간 표시용)
     stats: { turns: 0, costUsd: 0, durationMs: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     asks: [], // 답을 기다리는 도구 승인 물음
     limits: null, // 구독 한도 (rate_limit_event)
     apiKeySource: null, // "none" 이면 구독으로 도는 중이다
   }
+  // 위로 굴리면 따라가기를 멈춘다. 이건 사용자가 한 것이 확실하다.
+  el.addEventListener('wheel', (e) => {
+    if (e.deltaY < 0) tab.follow = false
+  })
+  // 바닥에 닿으면 다시 따라간다. 우리가 내린 스크롤도 여기로 떨어지므로 그대로 유지된다.
   el.addEventListener('scroll', () => {
-    // 우리가 내린 스크롤은 세지 않는다. 그걸 세면 자동 따라가기가 스스로 꺼진다.
-    if (tab.autoScrolling) return
-    tab.follow = el.scrollHeight - el.scrollTop - el.clientHeight < 120
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) tab.follow = true
   })
   state.tabs.push(tab)
   activate(tab)
@@ -820,7 +822,10 @@ function render(tab, keepScroll) {
     head = document.createElement('button')
     head.className = 'more'
     head.textContent = '위로 더 불러오기'
-    head.onclick = () => loadMessages(tab, tab.cursor)
+    head.onclick = () => {
+      tab.follow = false
+      loadMessages(tab, tab.cursor)
+    }
     el.prepend(head)
   } else if (!tab.hasMore && head) {
     head.remove()
@@ -854,11 +859,7 @@ function render(tab, keepScroll) {
   if (keepScroll) {
     el.scrollTop = prevTop + (el.scrollHeight - prevH)
   } else if (tab.follow) {
-    tab.autoScrolling = true
     el.scrollTop = el.scrollHeight
-    requestAnimationFrame(() => {
-      tab.autoScrolling = false
-    })
   }
   // 그 밖에는 건드리지 않는다. 안 건드리는 게 안 어긋나는 유일한 방법이다.
 
@@ -1047,6 +1048,22 @@ function renderRunInfo() {
   }
 }
 
+/** 서로 무효로 만드는 설정 조합을 그 자리에서 알려준다. 안 그러면 켜놓고 안 된다고 여긴다. */
+function updateSheetNote() {
+  const asking = $('setAsk').checked
+  const mode = $('setMode').value
+  const el = $('setNote')
+  if (asking && mode === 'bypassPermissions') {
+    el.textContent = '전체허용은 전부 미리 허용하는 모드라 물어볼 일이 없습니다. 물어보게 하려면 기본이나 편집허용을 고르세요.'
+  } else if (asking && mode === 'plan') {
+    el.textContent = '읽기전용은 편집·실행을 아예 안 하므로 물어볼 일이 거의 없습니다.'
+  } else if (!asking && mode !== 'bypassPermissions') {
+    el.textContent = '승인을 안 물어보므로, 승인이 필요한 도구는 되묻지 않고 거부됩니다.'
+  } else {
+    el.textContent = ''
+  }
+}
+
 function openSheet() {
   const tab = state.active
   if (!tab) return
@@ -1062,7 +1079,7 @@ function openSheet() {
   $('setState').textContent = tab.runId
     ? '이미 붙어 있습니다 — 적용하면 프로세스를 다시 띄웁니다 (맥락은 이어집니다)'
     : '아직 안 붙었습니다 — 첫 전송 때 이 설정으로 뜹니다'
-  $('setNote').textContent = ''
+  updateSheetNote()
   $('sheet').hidden = false
 }
 
@@ -1293,6 +1310,8 @@ $('settingsBtn').onclick = () => {
 }
 $('setClose').onclick = () => ($('sheet').hidden = true)
 $('setApply').onclick = applySheet
+$('setAsk').onchange = updateSheetNote
+$('setMode').onchange = updateSheetNote
 $('setModel').onchange = () => {
   $('setModelCustom').hidden = $('setModel').value !== '__custom'
   if (!$('setModelCustom').hidden) $('setModelCustom').focus()
