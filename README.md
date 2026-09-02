@@ -241,4 +241,7 @@ claude -p --output-format stream-json --input-format stream-json \
 
 ## 라이선스
 
-MIT
+[Apache License 2.0](LICENSE) — 누구나 쓰고, 고치고, 배포할 수 있습니다.
+특허 사용 허락이 명시돼 있고, 배포할 때 `NOTICE` 를 함께 실으면 됩니다.
+
+Copyright 2026 [Zerochord AI](https://github.com/ZerochordAI)

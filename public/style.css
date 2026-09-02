@@ -494,3 +494,14 @@ details.tool > summary .why { color: var(--bad); }
 .msg .body a:hover { text-decoration: underline; }
 .msg .body em { font-style: italic; color: #c8cdd4; }
 .msg .body del { color: var(--dim); }
+
+/* 만든 곳 */
+.madeby {
+  display: block;
+  margin-top: 10px;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: #5d646e;
+  text-decoration: none;
+}
+.madeby:hover { color: var(--accent); }
