@@ -53,6 +53,9 @@ function connect() {
     applyEvent(tab.messages, payload.ev)
     if (payload.ev.type === 'result') {
       tab.busy = false
+      tab.startedAt = 0
+      addStats(tab, payload.ev)
+      if (tab === state.active) renderRunInfo()
       // 사용자가 끊은 것이면 줄 서 있던 것을 자동으로 내보내지 않는다.
       // 끊었는데 다음 것이 곧바로 나가면 끊은 의미가 없다.
       if (tab.interrupted) tab.interrupted = false
@@ -285,6 +288,8 @@ function newTab({ sessionId, cwd, title }) {
     openTools: new Set(), // 펼쳐둔 도구 블록 id
     queue: [], // 답을 기다리는 동안 미리 쳐둔 것
     interrupted: false, // 사용자가 끊었으면 대기줄을 자동으로 내보내지 않는다
+    startedAt: 0, // 지금 턴을 언제 보냈나 (구동 시간 표시용)
+    stats: { turns: 0, costUsd: 0, durationMs: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   }
   el.addEventListener('scroll', () => {
     tab.follow = el.scrollHeight - el.scrollTop - el.clientHeight < 60
@@ -619,9 +624,17 @@ function msgEl(m, tab) {
   }
   wrap.append(body)
   if (m.meta && m.meta.costUsd != null) {
+    const u = m.meta.usage || {}
+    const bits = ['$' + Number(m.meta.costUsd).toFixed(4), fmtDur(m.meta.durationMs)]
+    if (m.meta.numTurns) bits.push(m.meta.numTurns + '턴')
+    if (u.input_tokens != null) bits.push('입력 ' + fmtTok(u.input_tokens))
+    if (u.output_tokens != null) bits.push('출력 ' + fmtTok(u.output_tokens))
+    const cache = (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0)
+    if (cache) bits.push('캐시 ' + fmtTok(cache))
     const meta = document.createElement('div')
     meta.className = 'meta'
-    meta.textContent = '$' + Number(m.meta.costUsd).toFixed(4) + ' · ' + Math.round((m.meta.durationMs || 0) / 100) / 10 + 's' + (m.meta.numTurns ? ' · ' + m.meta.numTurns + '턴' : '')
+    meta.textContent = bits.join(' · ')
+    meta.title = usageDetail(u)
     wrap.append(meta)
   }
   return wrap
@@ -778,6 +791,44 @@ const MODEL_NAMES = {
 }
 
 /** 지금 어떤 설정으로 붙어 있는지 입력창 위에 한 줄로. */
+/** 1234 -> 1.2k, 45678 -> 45.7k. 자릿수를 세지 않아도 크기가 보이게. */
+function fmtTok(n) {
+  const v = Number(n) || 0
+  if (v >= 1000000) return (v / 1000000).toFixed(1) + 'M'
+  if (v >= 1000) return (v / 1000).toFixed(1) + 'k'
+  return String(v)
+}
+
+function fmtDur(ms) {
+  const s = (Number(ms) || 0) / 1000
+  if (s < 60) return s.toFixed(1) + 's'
+  const m = Math.floor(s / 60)
+  return m + '분 ' + Math.round(s - m * 60) + '초'
+}
+
+function usageDetail(u) {
+  if (!u) return ''
+  return [
+    '입력 ' + (u.input_tokens || 0).toLocaleString(),
+    '출력 ' + (u.output_tokens || 0).toLocaleString(),
+    '캐시 생성 ' + (u.cache_creation_input_tokens || 0).toLocaleString(),
+    '캐시 읽기 ' + (u.cache_read_input_tokens || 0).toLocaleString(),
+  ].join('\n')
+}
+
+/** 턴이 끝날 때마다 이 탭의 누계에 더한다. */
+function addStats(tab, ev) {
+  const st = tab.stats
+  const u = ev.usage || {}
+  st.turns += 1
+  st.costUsd += Number(ev.total_cost_usd) || 0
+  st.durationMs += Number(ev.duration_ms) || 0
+  st.input += u.input_tokens || 0
+  st.output += u.output_tokens || 0
+  st.cacheRead += u.cache_read_input_tokens || 0
+  st.cacheWrite += u.cache_creation_input_tokens || 0
+}
+
 function renderRunInfo() {
   const el = $('runinfo')
   const tab = state.active
@@ -786,9 +837,31 @@ function renderRunInfo() {
   el.replaceChildren()
 
   const dot = document.createElement('span')
-  dot.className = tab.runId ? 'on' : 'off'
-  dot.textContent = tab.runId ? '● 붙어 있음' : '○ 아직 안 붙음'
+  if (tab.busy && tab.startedAt) {
+    dot.className = 'run'
+    dot.textContent = '● 응답 중 ' + fmtDur(Date.now() - tab.startedAt)
+  } else {
+    dot.className = tab.runId ? 'on' : 'off'
+    dot.textContent = tab.runId ? '● 붙어 있음' : '○ 아직 안 붙음'
+  }
   el.append(dot)
+
+  // 이 탭에서 지금까지 쓴 것
+  const st = tab.stats
+  if (st.turns) {
+    const tot = document.createElement('span')
+    const tokens = st.input + st.output + st.cacheWrite
+    tot.textContent =
+      '· ' + st.turns + '턴 · ' + fmtDur(st.durationMs) + ' · 토큰 ' + fmtTok(tokens) + ' · $' + st.costUsd.toFixed(4)
+    tot.title = [
+      '이 창에서 이 대화에 쓴 누계',
+      '입력 ' + st.input.toLocaleString(),
+      '출력 ' + st.output.toLocaleString(),
+      '캐시 생성 ' + st.cacheWrite.toLocaleString(),
+      '캐시 읽기 ' + st.cacheRead.toLocaleString() + ' (값이 싸서 합계에서 뺐습니다)',
+    ].join('\n')
+    el.append(tot)
+  }
 
   const s = tab.settings
   const mode = document.createElement('span')
@@ -944,6 +1017,7 @@ async function deliver(tab, text, imgs) {
   })
   tab.follow = true
   tab.busy = true
+  tab.startedAt = Date.now()
   render(tab)
   try {
     await ensureRun(tab)
@@ -1102,6 +1176,12 @@ window.addEventListener('resize', autosize)
   if ([...$('mode').options].some((o) => o.value === d.permissionMode)) $('mode').value = d.permissionMode
   $('mode').onchange = () => saveDefaults({ ...loadDefaults(), permissionMode: $('mode').value })
 }
+
+// 응답 중에는 구동 시간이 흘러야 한다. 0.5초마다 그 줄만 다시 그린다.
+setInterval(() => {
+  const t = state.active
+  if (t && t.busy && !t.readonly) renderRunInfo()
+}, 500)
 
 connect()
 refresh()

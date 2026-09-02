@@ -505,3 +505,4 @@ details.tool > summary .why { color: var(--bad); }
   text-decoration: none;
 }
 .madeby:hover { color: var(--accent); }
+.runinfo .run { color: var(--accent); }
