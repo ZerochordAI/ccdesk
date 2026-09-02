@@ -364,6 +364,11 @@ server.listen(port, HOST, () => {
   console.log(exe ? '창: ' + exe : '전용 창 없이 시작했습니다 (주소를 직접 여세요)')
 })
 
+// 대화 하나에서 난 사고가 서버를 내려서는 안 된다. 다른 탭까지 통째로 끝나기 때문이다.
+// 로컬 도구이므로 살아 있는 쪽이 낫다 — 다만 무슨 일이 있었는지는 남긴다.
+process.on('uncaughtException', (e) => console.error('예기치 못한 오류 (계속 돕니다):', (e && e.stack) || e))
+process.on('unhandledRejection', (e) => console.error('처리되지 않은 거부 (계속 돕니다):', (e && e.stack) || e))
+
 function shutdown() {
   for (const [, r] of runs) r.run.stop()
   process.exit(0)

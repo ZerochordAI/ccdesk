@@ -229,7 +229,12 @@ export function applyEvent(list, ev) {
         m.meta = { usage: ev.usage, costUsd: ev.total_cost_usd, durationMs: ev.duration_ms, numTurns: ev.num_turns }
       }
       for (const d of ev.permission_denials || []) pushNotice(list, 'denied', `권한 거부: ${d.tool_name}`)
-      if (ev.is_error) pushNotice(list, 'error', ev.result || '실행이 오류로 끝났습니다')
+      // 중단은 오류가 아니다. 끊으면 result 가 error_during_execution 으로 오고 result 는 비어 있다.
+      if (ev.subtype === 'error_during_execution') pushNotice(list, 'info', '중단했습니다.')
+      else if (ev.is_error) {
+        const why = typeof ev.result === 'string' && ev.result !== 'undefined' ? ev.result : ''
+        pushNotice(list, 'error', why || '실행이 오류로 끝났습니다')
+      }
       break
     }
 

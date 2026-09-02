@@ -53,7 +53,10 @@ function connect() {
     applyEvent(tab.messages, payload.ev)
     if (payload.ev.type === 'result') {
       tab.busy = false
-      flushQueue(tab)
+      // 사용자가 끊은 것이면 줄 서 있던 것을 자동으로 내보내지 않는다.
+      // 끊었는데 다음 것이 곧바로 나가면 끊은 의미가 없다.
+      if (tab.interrupted) tab.interrupted = false
+      else flushQueue(tab)
     }
     if (tab !== state.active) {
       tab.unread = true
@@ -281,6 +284,7 @@ function newTab({ sessionId, cwd, title }) {
     nodes: new Map(), // 메시지 id -> 그려둔 DOM. 바뀐 것만 다시 그리려고 들고 있다
     openTools: new Set(), // 펼쳐둔 도구 블록 id
     queue: [], // 답을 기다리는 동안 미리 쳐둔 것
+    interrupted: false, // 사용자가 끊었으면 대기줄을 자동으로 내보내지 않는다
   }
   el.addEventListener('scroll', () => {
     tab.follow = el.scrollHeight - el.scrollTop - el.clientHeight < 60
@@ -1055,7 +1059,13 @@ $('setModel').onchange = () => {
 $('send').onclick = send
 $('stop').onclick = () => {
   const tab = state.active
-  if (tab && tab.runId) api('/api/runs/' + tab.runId + '/interrupt', { method: 'POST' }).catch(() => {})
+  if (!tab || !tab.runId || !tab.busy) return
+  tab.interrupted = true
+  api('/api/runs/' + tab.runId + '/interrupt', { method: 'POST' }).catch((e) => {
+    tab.interrupted = false
+    tab.messages.push({ id: 'e' + Date.now(), role: 'notice', blocks: [{ type: 'notice', level: 'error', text: '중단하지 못했습니다: ' + e.message }] })
+    render(tab)
+  })
 }
 $('input').oninput = autosize
 
