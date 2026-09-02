@@ -7,6 +7,9 @@
 
 import { applyEvent, appendHistory } from '/normalize.js'
 
+// 브라우저가 새 파일을 받았는지 눈으로 확인하려고 박아둔다. 고칠 때마다 올린다.
+const BUILD = 'b7'
+
 const TOKEN = new URL(location.href).searchParams.get('t') || ''
 const $ = (id) => document.getElementById(id)
 
@@ -37,10 +40,35 @@ async function api(path, opts = {}) {
   return data
 }
 
+/**
+ * 좌측 하단 상태 한 줄. 화면이 왜 안 도는지 물어보지 않고 알 수 있게 한다.
+ * 빌드 표시가 안 맞으면 브라우저가 옛 파일을 쥐고 있는 것이다.
+ */
+let sseOk = false
+function renderDiag() {
+  const t = state.active
+  const bits = ['build ' + BUILD, sseOk ? 'SSE 연결' : 'SSE 끊김']
+  if (t) {
+    bits.push('따라가기 ' + (t.follow ? '켬' : '끔'))
+    if (t.busy) bits.push('응답 중')
+    if (t.readonly) bits.push('보기전용')
+    if (t.asks.length) bits.push('승인대기 ' + t.asks.length)
+  }
+  $('diag').textContent = bits.join(' · ')
+}
+
 function connect() {
   const es = new EventSource('/api/stream?t=' + encodeURIComponent(TOKEN))
-  es.onopen = () => $('conn').classList.add('on')
-  es.onerror = () => $('conn').classList.remove('on')
+  es.onopen = () => {
+    sseOk = true
+    $('conn').classList.add('on')
+    renderDiag()
+  }
+  es.onerror = () => {
+    sseOk = false
+    $('conn').classList.remove('on')
+    renderDiag()
+  }
   es.onmessage = (e) => {
     let payload
     try {
@@ -1368,6 +1396,7 @@ window.addEventListener('resize', autosize)
 setInterval(() => {
   const t = state.active
   if (t && t.busy && !t.readonly) renderRunInfo()
+  renderDiag()
 }, 500)
 
 connect()
