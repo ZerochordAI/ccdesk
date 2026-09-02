@@ -2,3 +2,20 @@ node_modules/
 *.log
 .DS_Store
 Thumbs.db
+
+# 개인 설정 — 사람마다 다르고 공개할 것이 아니다
+.claude/
+.env
+.env.*
+*.local
+settings.local.json
+
+# 에디터
+.vscode/
+.idea/
+*.swp
+
+# 작업 중 임시물
+scratchpad/
+tmp/
+*.tmp

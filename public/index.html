@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ccdesk</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <aside id="side">
+      <div class="side-head">
+        <div class="brand">ccdesk</div>
+        <div id="conn" class="conn" title="서버 연결">●</div>
+      </div>
+
+      <div class="field">
+        <div class="label">범위</div>
+        <div class="scopes">
+          <label><input type="radio" name="scope" value="all" checked /> 전체</label>
+          <label><input type="radio" name="scope" value="root" /> 루트</label>
+          <label><input type="radio" name="scope" value="project" /> 프로젝트</label>
+        </div>
+      </div>
+
+      <div class="field" id="pathField" hidden>
+        <input id="path" type="text" placeholder="C:\Users\...\GitHub" spellcheck="false" />
+        <div id="roots" class="roots"></div>
+      </div>
+
+      <div class="field">
+        <input id="q" type="text" placeholder="제목·경로 검색" spellcheck="false" />
+      </div>
+
+      <div id="list" class="list"></div>
+
+      <div class="side-foot">
+        <div class="label">새 대화 권한</div>
+        <select id="mode">
+          <option value="plan">읽기전용 — plan</option>
+          <option value="acceptEdits" selected>편집허용 — acceptEdits</option>
+          <option value="bypassPermissions">전체허용 — bypassPermissions</option>
+        </select>
+        <button id="newChat">＋ 새 대화</button>
+        <div id="count" class="muted"></div>
+      </div>
+    </aside>
+
+    <main id="main">
+      <div id="tabs" class="tabs"></div>
+      <div id="panes" class="panes">
+        <div id="empty" class="empty">
+          <p>왼쪽에서 대화를 고르면 여기에 열립니다.</p>
+          <p class="muted">여러 개를 열어 탭으로 오갈 수 있습니다.</p>
+        </div>
+      </div>
+      <div id="robar" class="banner" hidden></div>
+
+      <div id="sheet" class="sheet" hidden>
+        <div class="sheet-head">
+          <span>이 대화 설정</span>
+          <span id="setState" class="hint"></span>
+        </div>
+
+        <label class="f">
+          <span>모델</span>
+          <select id="setModel">
+            <option value="">기본 — 설정하지 않음</option>
+            <option value="claude-opus-5">Opus 5</option>
+            <option value="claude-sonnet-5">Sonnet 5</option>
+            <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
+            <option value="__custom">직접 입력…</option>
+          </select>
+        </label>
+        <input id="setModelCustom" type="text" placeholder="모델 id" spellcheck="false" hidden />
+
+        <label class="f">
+          <span>권한</span>
+          <select id="setMode">
+            <option value="plan">읽기전용 — plan</option>
+            <option value="default">기본 — default</option>
+            <option value="acceptEdits">편집허용 — acceptEdits</option>
+            <option value="bypassPermissions">전체허용 — bypassPermissions</option>
+          </select>
+        </label>
+
+        <label class="f">
+          <span>허용 도구 <em class="hint">쉼표로 구분 · 비우면 안 넘김</em></span>
+          <input id="setTools" type="text" placeholder="Bash,Read,Edit" spellcheck="false" />
+        </label>
+
+        <label class="f">
+          <span>추가 폴더 <em class="hint">한 줄에 하나 · 절대경로만</em></span>
+          <textarea id="setDirs" rows="2" placeholder="C:\Users\me\Documents\GitHub\다른-저장소" spellcheck="false"></textarea>
+        </label>
+
+        <div id="setNote" class="sheet-note"></div>
+
+        <div class="sheet-foot">
+          <label class="chk"><input type="checkbox" id="setDefault" checked /> 새 대화 기본값으로도</label>
+          <button id="setApply">적용</button>
+          <button id="setClose" class="ghost">닫기</button>
+        </div>
+      </div>
+
+      <div id="runinfo" class="runinfo" hidden></div>
+
+      <div id="composer" class="composer" hidden>
+        <div class="composer-main">
+          <div id="attach" class="attach" hidden></div>
+          <textarea id="input" rows="3" placeholder="Enter 전송 · Shift+Enter 줄바꿈 · 이미지는 붙여넣기(Ctrl+V)나 끌어다 놓기" spellcheck="false"></textarea>
+        </div>
+        <div class="composer-side">
+          <button id="settingsBtn" class="ghost">설정</button>
+          <button id="send">전송</button>
+          <button id="stop" class="ghost">중단</button>
+        </div>
+      </div>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

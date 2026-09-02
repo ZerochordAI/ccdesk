@@ -14,7 +14,8 @@
     "server.js",
     "lib/",
     "public/",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "keywords": [
     "claude",
@@ -24,5 +25,13 @@
   ],
   "scripts": {
     "start": "node server.js"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/junhyunp/ccdesk.git"
+  },
+  "bugs": {
+    "url": "https://github.com/junhyunp/ccdesk/issues"
+  },
+  "homepage": "https://github.com/junhyunp/ccdesk#readme"
 }

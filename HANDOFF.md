@@ -99,8 +99,8 @@ result/success   permission_denials:[{tool_name:"Write", ...}]
 - 위치: `~/.claude/projects/<인코딩된경로>/<sessionId>.jsonl`
 - **⚠️ 폴더명을 역해독하지 말 것.** 드라이브 문자 대소문자가 뒤섞이고, `.` 도 `-` 가 되고,
   하위 폴더도 `-` 라서 되돌릴 수 없다.
-  실제로 `c--Users-JunHyun-Documents-GitHub-NPLogic-web` 는 `NPLogic-web` 이 아니라
-  **`NPLogic\web`** 이었다. 역해독했으면 틀렸을 것이다.
+  실제로 `c--Users-me-Documents-GitHub-myapp-web` 는 `myapp-web` 이 아니라
+  **`myapp\web`** 이었다. 역해독했으면 틀렸을 것이다.
   → **세션 파일 안의 `cwd` 필드를 읽어라.** 이게 언제나 진짜 경로다. (구현돼 있음)
 - 한 줄이 하나의 JSON. `type` 값이 여러 가지다:
   `user`, `assistant`, `attachment`, `system`, `mode`, `permission-mode`,
@@ -108,7 +108,7 @@ result/success   permission_denials:[{tool_name:"Write", ...}]
 - `user`/`assistant`/`system` 라인에 `cwd`, `gitBranch`, `version`, `timestamp`, `sessionId` 가 있다
 - **`ai-title` 라인에 사람이 읽을 제목이 있다.** 목록에 이걸 써야 한다:
   ```json
-  {"type":"ai-title","aiTitle":"NPLogic desktop 이어작업 컨텍스트 인계","sessionId":"..."}
+  {"type":"ai-title","aiTitle":"myapp desktop 이어작업 컨텍스트 인계","sessionId":"..."}
   ```
   여러 번 갱신되므로 **마지막 것**이 최신이다.
   압축된 세션은 첫 사용자 메시지가 "This session is being continued..." 라 제목으로 못 쓴다.
@@ -157,10 +157,10 @@ result/success   permission_denials:[{tool_name:"Write", ...}]
 실측 출력:
 ```
 프로젝트 9 개 — 56 ms
-   5개  2026-09-01 15:24  C:\Users\JunHyun\Documents\GitHub\NPLogic-desktop-edit
+   5개  2026-09-01 15:24  C:\Users\me\Documents\GitHub\myapp-desktop
    ...
   2026-09-01 15:24  22.2MB   [AI] Desktop 프로그램 평가 탭 그래프 축 수정
-  2026-08-29 07:53  374.8MB  [AI] NPLogic desktop 이어작업 컨텍스트 인계
+  2026-08-29 07:53  374.8MB  [AI] myapp desktop 이어작업 컨텍스트 인계
 ```
 
 ### `lib/runner.js`
