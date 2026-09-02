@@ -59,7 +59,7 @@ ccdesk 를 서버에 올려놓고 여러 명이 접속하게 만들면, **모두
 ## 실행
 
 ```bash
-git clone https://github.com/Junhyunp/ccdesk.git
+git clone https://github.com/ZerochordAI/ccdesk.git
 cd ccdesk
 node server.js
 ```
