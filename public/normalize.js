@@ -223,6 +223,17 @@ export function applyEvent(list, ev) {
       break
 
     case 'result': {
+      // 턴이 끝났는데 결과가 안 온 도구가 있다. 중단하거나 거부되면 그렇게 된다.
+      // 안 닫아주면 "실행 중…" 인 채로 영원히 남는다.
+      for (const msg of list) {
+        for (const b of msg.blocks) {
+          if (b.type === 'tool' && b.state === 'running') {
+            b.state = 'done'
+            b.isError = true
+            b.result = b.result || '결과가 오지 않은 채 턴이 끝났습니다 (중단되었거나 거부되었습니다)'
+          }
+        }
+      }
       const m = [...list].reverse().find((x) => x.role === 'assistant')
       if (m) {
         m.streaming = false

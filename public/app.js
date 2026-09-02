@@ -50,6 +50,18 @@ function connect() {
     }
     const tab = state.tabs.find((t) => t.runId === payload.runId)
     if (!tab) return
+
+    // 구독 한도는 메시지가 아니라 탭 상태다. 구독을 쓰면 이 숫자가 비용보다 중요하다.
+    if (payload.ev.type === 'rate_limit_event' && payload.ev.rate_limit_info) {
+      tab.limits = payload.ev.rate_limit_info
+      if (tab === state.active) renderRunInfo()
+      return
+    }
+    if (payload.ev.type === 'system' && payload.ev.subtype === 'init') {
+      tab.apiKeySource = payload.ev.apiKeySource || null
+      if (tab === state.active) renderRunInfo()
+    }
+
     applyEvent(tab.messages, payload.ev)
     if (payload.ev.type === 'result') {
       tab.busy = false
@@ -331,6 +343,8 @@ function newTab({ sessionId, cwd, title }) {
     interrupted: false, // 사용자가 끊었으면 대기줄을 자동으로 내보내지 않는다
     startedAt: 0, // 지금 턴을 언제 보냈나 (구동 시간 표시용)
     stats: { turns: 0, costUsd: 0, durationMs: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    limits: null, // 구독 한도 (rate_limit_event)
+    apiKeySource: null, // "none" 이면 구독으로 도는 중이다
   }
   el.addEventListener('scroll', () => {
     tab.follow = el.scrollHeight - el.scrollTop - el.clientHeight < 60
@@ -892,8 +906,7 @@ function renderRunInfo() {
   if (st.turns) {
     const tot = document.createElement('span')
     const tokens = st.input + st.output + st.cacheWrite
-    tot.textContent =
-      '· ' + st.turns + '턴 · ' + fmtDur(st.durationMs) + ' · 토큰 ' + fmtTok(tokens) + ' · $' + st.costUsd.toFixed(4)
+    tot.textContent = '· ' + st.turns + '턴 · ' + fmtDur(st.durationMs) + ' · 토큰 ' + fmtTok(tokens)
     tot.title = [
       '이 창에서 이 대화에 쓴 누계',
       '입력 ' + st.input.toLocaleString(),
@@ -902,6 +915,30 @@ function renderRunInfo() {
       '캐시 읽기 ' + st.cacheRead.toLocaleString() + ' (값이 싸서 합계에서 뺐습니다)',
     ].join('\n')
     el.append(tot)
+
+    // 비용 표시. 구독이면 청구되는 돈이 아니라 API 환산값이다 — 그렇게 적는다.
+    const sub = tab.apiKeySource === 'none'
+    const cost = document.createElement('span')
+    cost.className = sub ? 'est' : ''
+    cost.textContent = '· ' + (sub ? 'API 환산 ' : '') + '$' + st.costUsd.toFixed(4)
+    cost.title = sub
+      ? '구독으로 쓰고 있어 실제로 청구되는 금액이 아닙니다.\n같은 사용량을 API 로 했을 때의 값입니다.\n구독에서 실제로 닳는 것은 아래 한도입니다.'
+      : 'API 키로 쓰고 있어 실제 청구에 가깝습니다.'
+    el.append(cost)
+  }
+
+  // 구독 한도 — 구독 사용자에게는 이게 진짜 잔량이다
+  const rl = tab.limits && tab.limits.unifiedWindows
+  if (rl) {
+    const pct = (w) => (w && w.utilization != null ? Math.round(w.utilization * 100) + '%' : '?')
+    const when = (w) => (w && w.resetsAt ? new Date(w.resetsAt * 1000).toLocaleString() : '?')
+    const lim = document.createElement('span')
+    const five = rl.five_hour
+    const week = rl.seven_day
+    lim.className = Math.max(five?.utilization || 0, week?.utilization || 0) > 0.8 ? 'risk' : ''
+    lim.textContent = '· 한도 5시간 ' + pct(five) + ' · 7일 ' + pct(week)
+    lim.title = ['5시간 창 초기화: ' + when(five), '7일 창 초기화: ' + when(week), '상태: ' + (tab.limits.status || '?')].join('\n')
+    el.append(lim)
   }
 
   const s = tab.settings

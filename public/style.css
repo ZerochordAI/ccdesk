@@ -527,3 +527,4 @@ details.tool > summary .why { color: var(--bad); }
 }
 .item:hover .pen { opacity: 1; }
 .item .pen:hover { color: var(--accent); background: var(--bg2); }
+.runinfo .est { color: #6f7681; }
