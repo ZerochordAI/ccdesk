@@ -54,6 +54,7 @@
           <p class="muted">여러 개를 열어 탭으로 오갈 수 있습니다.</p>
         </div>
       </div>
+      <div id="askbar" class="askbar" hidden></div>
       <div id="robar" class="banner" hidden></div>
 
       <div id="sheet" class="sheet" hidden>
@@ -92,6 +93,11 @@
         <label class="f">
           <span>추가 폴더 <em class="hint">한 줄에 하나 · 절대경로만</em></span>
           <textarea id="setDirs" rows="2" placeholder="C:\Users\me\Documents\GitHub\다른-저장소" spellcheck="false"></textarea>
+        </label>
+
+        <label class="f">
+          <span>도구 승인 <em class="hint">필요할 때 물어본다</em></span>
+          <span class="chk"><input type="checkbox" id="setAsk" /> 승인이 필요하면 화면에서 물어보기</span>
         </label>
 
         <div id="setNote" class="sheet-note"></div>

@@ -11,7 +11,8 @@
 import { createServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, resolve, extname, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
@@ -33,6 +34,9 @@ const HOST = '127.0.0.1'
 
 const runs = new Map() // runId -> { run, cwd, sessionId }
 const clients = new Set() // SSE 응답들
+// 도구 승인 대기소. MCP 창구(lib/mcp-approve.js)가 물어오면 여기 담아두고,
+// 사용자가 화면에서 누를 때까지 그 HTTP 응답을 붙들고 있는다.
+const asks = new Map() // askId -> { runId, res, timer, ... }
 let port = Number(process.env.CCDESK_PORT || 4317)
 
 // ── 유틸 ──────────────────────────────────────────────────────────
@@ -92,6 +96,28 @@ function broadcast(runId, ev) {
     } catch {
       /* 끊긴 클라이언트는 close 에서 정리된다 */
     }
+  }
+}
+
+/** 기다리던 승인 물음 하나를 끝낸다. 붙들고 있던 MCP 쪽 응답을 그제야 돌려준다. */
+function finishAsk(askId, answer) {
+  const rec = asks.get(askId)
+  if (!rec) return false
+  asks.delete(askId)
+  clearTimeout(rec.timer)
+  try {
+    sendJson(rec.res, 200, answer)
+  } catch {
+    /* MCP 쪽이 이미 갔으면 그만이다 */
+  }
+  broadcast(rec.runId, { type: 'ccdesk', level: 'ask-done', askId })
+  return true
+}
+
+/** run 이 사라지면 그 run 의 물음도 거부로 닫는다. 안 그러면 MCP 쪽이 영영 기다린다. */
+function cancelAsksOf(runId) {
+  for (const [id, rec] of [...asks]) {
+    if (rec.runId === runId) finishAsk(id, { behavior: 'deny', message: '대화가 닫혔습니다' })
   }
 }
 
@@ -163,6 +189,40 @@ async function handleApi(req, res, url) {
     })
   }
 
+  // MCP 창구가 물어온다. 사용자가 누를 때까지 이 응답을 닫지 않는다.
+  if (p === '/api/asks' && req.method === 'POST') {
+    const b = await readBody(req)
+    const askId = randomUUID()
+    const wait = Math.min(Math.max(Number(b.waitMs) || 600000, 5000), 30 * 60 * 1000)
+    const rec = {
+      runId: b.runId,
+      toolName: String(b.toolName || '(이름 없음)'),
+      input: b.input ?? {},
+      toolUseId: b.toolUseId || null,
+      res,
+      at: Date.now(),
+    }
+    rec.timer = setTimeout(() => finishAsk(askId, { behavior: 'deny', message: '시간이 지나 자동으로 거부했습니다' }), wait)
+    asks.set(askId, rec)
+    broadcast(rec.runId, {
+      type: 'ccdesk',
+      level: 'ask',
+      ask: { id: askId, toolName: rec.toolName, input: rec.input, toolUseId: rec.toolUseId },
+    })
+    return // 응답은 finishAsk 가 보낸다
+  }
+
+  const am = p.match(/^\/api\/asks\/([^/]+)\/answer$/)
+  if (am && req.method === 'POST') {
+    const b = await readBody(req)
+    const ok = finishAsk(decodeURIComponent(am[1]), {
+      behavior: b.behavior === 'allow' ? 'allow' : 'deny',
+      updatedInput: b.updatedInput && typeof b.updatedInput === 'object' ? b.updatedInput : undefined,
+      message: b.message || undefined,
+    })
+    return sendJson(res, ok ? 200 : 404, ok ? { ok: true } : { error: '이미 끝난 물음입니다' })
+  }
+
   const tm = p.match(/^\/api\/sessions\/([^/]+)\/title$/)
   if (tm && req.method === 'PUT') {
     const b = await readBody(req)
@@ -212,6 +272,31 @@ async function handleApi(req, res, url) {
     const mode = PERMISSION_MODES.includes(b.permissionMode) ? b.permissionMode : 'acceptEdits'
     // 추가 폴더는 실제로 있는 것만 넘긴다. 없는 경로를 주면 CLI 가 그냥 죽는다.
     const dirs = (Array.isArray(b.addDirs) ? b.addDirs : []).map(safeDir).filter((d) => d && existsSync(d))
+    const runId = randomUUID()
+
+    // 도구 승인을 사용자에게 물으려면 창구가 있어야 한다. CLI 는 그 창구를 MCP 도구로 받는다.
+    // 창구 없이 띄우면 승인이 필요한 순간 되묻지 않고 그냥 거부된다.
+    let mcpConfigPath = null
+    let permissionPromptTool = null
+    if (b.askUser) {
+      const cfg = {
+        mcpServers: {
+          ccdesk: {
+            command: process.execPath,
+            args: [join(ROOT, 'lib', 'mcp-approve.js')],
+            env: {
+              CCDESK_URL: 'http://' + HOST + ':' + port,
+              CCDESK_TOKEN: TOKEN,
+              CCDESK_RUN: runId,
+            },
+          },
+        },
+      }
+      mcpConfigPath = join(tmpdir(), 'ccdesk-mcp-' + runId + '.json')
+      writeFileSync(mcpConfigPath, JSON.stringify(cfg), 'utf8')
+      permissionPromptTool = 'mcp__ccdesk__approve'
+    }
+
     const run = new Run({
       cwd: b.cwd,
       sessionId: b.sessionId || null,
@@ -219,8 +304,9 @@ async function handleApi(req, res, url) {
       allowedTools: Array.isArray(b.allowedTools) ? b.allowedTools : [],
       model: b.model || null,
       addDirs: dirs,
+      mcpConfigPath,
+      permissionPromptTool,
     })
-    const runId = randomUUID()
     run.on('event', (ev) => {
       const rec = runs.get(runId)
       if (rec) rec.sessionId = run.sessionId
@@ -236,6 +322,7 @@ async function handleApi(req, res, url) {
       model: run.model,
       allowedTools: run.allowedTools,
       addDirs: run.addDirs,
+      askUser: Boolean(permissionPromptTool),
     })
   }
 
@@ -254,6 +341,7 @@ async function handleApi(req, res, url) {
     }
     if (rm[2] === '/interrupt' && req.method === 'POST') return sendJson(res, 200, { ok: rec.run.interrupt() })
     if (!rm[2] && req.method === 'DELETE') {
+      cancelAsksOf(rm[1])
       rec.run.stop()
       runs.delete(rm[1])
       return sendJson(res, 200, { ok: true })
@@ -382,6 +470,7 @@ process.on('uncaughtException', (e) => console.error('예기치 못한 오류 (�
 process.on('unhandledRejection', (e) => console.error('처리되지 않은 거부 (계속 돕니다):', (e && e.stack) || e))
 
 function shutdown() {
+  for (const id of [...asks.keys()]) finishAsk(id, { behavior: 'deny', message: 'ccdesk 가 종료됩니다' })
   for (const [, r] of runs) r.run.stop()
   process.exit(0)
 }

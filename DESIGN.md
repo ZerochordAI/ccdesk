@@ -225,6 +225,31 @@ stream-json stdin 의 `content` 에 API 형식 그대로 실으면 CLI 가 받�
 - 그래서 UI 는 **오류 사유의 첫 줄을 접힌 채로도** 보여준다. 안 그러면 화면엔 "오류" 두 글자뿐이다
 - 풀려면 `bypassPermissions` 를 고르거나, 명령을 쪼개 보내야 한다
 
+### 9.2c ✅ 승인 왕복은 만들 수 있다 — `--permission-prompt-tool`
+
+"헤드리스엔 승인 왕복이 없다"(R9 의 근거)는 **절반만 맞았다.** 창구가 없을 때만 그렇다.
+CLI 안에 이렇게 적혀 있다:
+
+> With a permission prompt surface (stdio/SDK canUseTool), the 'ask' path surfaces via a
+> can_use_tool control_request. Without one (bare `-p`), 'ask' decisions are terminal.
+
+시도한 것과 결과:
+
+| 방법 | 결과 |
+|---|---|
+| `--permission-mode manual` 만 | ❌ 안 물어온다. `system/init` 은 `permissionMode: default` 로 보고하고 거부 |
+| stdin 으로 `initialize` 제어 요청 | ❌ 응답 없음. `system/init` 의 capabilities 에도 권한 관련이 없다 |
+| **`--permission-prompt-tool` + MCP 도구** | ✅ **된다.** Write 를 물어왔고, allow 로 답하니 파일이 생겼다 |
+
+그래서 `lib/mcp-approve.js` 를 뒀다. MCP 는 stdio 위의 JSON-RPC 라 패키지 없이 직접 말한다.
+CLI 가 그 서버를 띄우므로 ccdesk 서버와는 다른 프로세스이고, HTTP 로 다시 이어 붙인다.
+
+- 서버는 물음이 오면 **그 HTTP 응답을 닫지 않고 붙들고 있다가** 사용자가 누르면 돌려준다
+- 물어볼 수 없으면 거부한다. 10분 지나도 거부한다
+- 대화를 닫거나 서버가 내려가면 대기 중인 물음을 전부 거부로 닫는다 — 안 그러면 MCP 쪽이 영영 기다린다
+
+⚠️ 모델이 선택지를 주는 `AskUserQuestion` 은 헤드리스 도구 목록(69개)에 **없다.** 이건 별개 문제다.
+
 ### 9.2b `--add-dir` 은 효과를 확인하지 못했다
 
 ccdesk 안에서 작업 폴더 밖을 못 읽는 일이 있어 "`--add-dir` 을 안 넘겨서"라고 판단했는데, **틀렸다.**

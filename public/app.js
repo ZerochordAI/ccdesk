@@ -51,6 +51,22 @@ function connect() {
     const tab = state.tabs.find((t) => t.runId === payload.runId)
     if (!tab) return
 
+    // 도구 승인 물음. 대화 흐름이 아니라 지금 답해야 하는 것이라 따로 띄운다.
+    if (payload.ev.type === 'ccdesk' && payload.ev.level === 'ask' && payload.ev.ask) {
+      tab.asks.push(payload.ev.ask)
+      if (tab === state.active) renderAsks()
+      else {
+        tab.unread = true
+        renderTabs()
+      }
+      return
+    }
+    if (payload.ev.type === 'ccdesk' && payload.ev.level === 'ask-done') {
+      tab.asks = tab.asks.filter((a) => a.id !== payload.ev.askId)
+      if (tab === state.active) renderAsks()
+      return
+    }
+
     // 구독 한도는 메시지가 아니라 탭 상태다. 구독을 쓰면 이 숫자가 비용보다 중요하다.
     if (payload.ev.type === 'rate_limit_event' && payload.ev.rate_limit_info) {
       tab.limits = payload.ev.rate_limit_info
@@ -283,12 +299,16 @@ function activate(tab) {
   $('sheet').hidden = true
   renderReadonlyBar(tab)
   renderRunInfo()
-  if (!tab) $('queue').hidden = true
+  if (!tab) {
+    $('queue').hidden = true
+    $('askbar').hidden = true
+  }
   if (tab) {
     tab.unread = false
     $('input').value = tab.draft || ''
     renderAttach()
     renderQueue()
+    renderAsks()
     autosize()
     if (!tab.readonly) $('input').focus()
     markClamped(tab)
@@ -341,13 +361,17 @@ function newTab({ sessionId, cwd, title }) {
     openTools: new Set(), // 펼쳐둔 도구 블록 id
     queue: [], // 답을 기다리는 동안 미리 쳐둔 것
     interrupted: false, // 사용자가 끊었으면 대기줄을 자동으로 내보내지 않는다
+    autoScrolling: false, // 우리가 내리는 중 — 스크롤 이벤트를 사용자 것으로 세지 않는다
     startedAt: 0, // 지금 턴을 언제 보냈나 (구동 시간 표시용)
     stats: { turns: 0, costUsd: 0, durationMs: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    asks: [], // 답을 기다리는 도구 승인 물음
     limits: null, // 구독 한도 (rate_limit_event)
     apiKeySource: null, // "none" 이면 구독으로 도는 중이다
   }
   el.addEventListener('scroll', () => {
-    tab.follow = el.scrollHeight - el.scrollTop - el.clientHeight < 60
+    // 우리가 내린 스크롤은 세지 않는다. 그걸 세면 자동 따라가기가 스스로 꺼진다.
+    if (tab.autoScrolling) return
+    tab.follow = el.scrollHeight - el.scrollTop - el.clientHeight < 120
   })
   state.tabs.push(tab)
   activate(tab)
@@ -387,6 +411,62 @@ async function loadMessages(tab, before) {
     render(tab, before != null)
   } catch (e) {
     tab.messages.push({ id: 'e', role: 'notice', blocks: [{ type: 'notice', level: 'error', text: e.message }] })
+    render(tab)
+  }
+}
+
+/**
+ * 도구 승인 카드. 답하기 전에는 대화가 멈춰 있으므로 눈에 띄는 자리에 둔다.
+ * 답을 보내면 서버가 붙들고 있던 MCP 쪽 응답을 그제야 돌려준다.
+ */
+function renderAsks() {
+  const box = $('askbar')
+  const tab = state.active
+  const list = tab ? tab.asks : []
+  box.replaceChildren()
+  box.hidden = !list.length
+  if (box.hidden) return
+
+  for (const ask of list) {
+    const card = document.createElement('div')
+    card.className = 'ask'
+
+    const head = document.createElement('div')
+    head.className = 'ask-head'
+    head.textContent = '승인이 필요합니다 — ' + ask.toolName
+    card.append(head)
+
+    const pre = document.createElement('pre')
+    pre.className = 'code'
+    pre.textContent = JSON.stringify(ask.input, null, 2)
+    card.append(pre)
+
+    const foot = document.createElement('div')
+    foot.className = 'ask-foot'
+    const allow = document.createElement('button')
+    allow.className = 'ok'
+    allow.textContent = '허용'
+    allow.onclick = () => answerAsk(tab, ask, 'allow')
+    const deny = document.createElement('button')
+    deny.textContent = '거부'
+    deny.onclick = () => answerAsk(tab, ask, 'deny')
+    foot.append(allow, deny)
+    card.append(foot)
+
+    box.append(card)
+  }
+}
+
+async function answerAsk(tab, ask, behavior) {
+  tab.asks = tab.asks.filter((a) => a.id !== ask.id)
+  renderAsks()
+  try {
+    await api('/api/asks/' + encodeURIComponent(ask.id) + '/answer', {
+      method: 'POST',
+      body: JSON.stringify({ behavior, message: behavior === 'deny' ? '사용자가 거부했습니다' : undefined }),
+    })
+  } catch (e) {
+    tab.messages.push({ id: 'e' + Date.now(), role: 'notice', blocks: [{ type: 'notice', level: 'error', text: '답을 보내지 못했습니다: ' + e.message }] })
     render(tab)
   }
 }
@@ -731,7 +811,6 @@ function render(tab, keepScroll) {
   const el = tab.el
   const prevH = el.scrollHeight
   const prevTop = el.scrollTop
-  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60
 
   if (!tab.nodes) tab.nodes = new Map()
 
@@ -772,8 +851,15 @@ function render(tab, keepScroll) {
     }
   }
 
-  if (keepScroll) el.scrollTop = prevTop + (el.scrollHeight - prevH)
-  else if (tab.follow && atBottom) el.scrollTop = el.scrollHeight
+  if (keepScroll) {
+    el.scrollTop = prevTop + (el.scrollHeight - prevH)
+  } else if (tab.follow) {
+    tab.autoScrolling = true
+    el.scrollTop = el.scrollHeight
+    requestAnimationFrame(() => {
+      tab.autoScrolling = false
+    })
+  }
   // 그 밖에는 건드리지 않는다. 안 건드리는 게 안 어긋나는 유일한 방법이다.
 
   markClamped(tab)
@@ -803,6 +889,7 @@ async function ensureRun(tab) {
       model: s.model || null,
       allowedTools: s.allowedTools,
       addDirs: s.addDirs,
+      askUser: Boolean(s.askUser),
     }),
   })
   tab.runId = data.runId
@@ -813,6 +900,7 @@ async function ensureRun(tab) {
     permissionMode: data.permissionMode,
     allowedTools: data.allowedTools || [],
     addDirs: data.addDirs || [],
+    askUser: Boolean(data.askUser),
   }
   renderRunInfo()
   return tab.runId
@@ -821,7 +909,7 @@ async function ensureRun(tab) {
 // ── 설정 ──────────────────────────────────────────────────────────
 
 const DEFAULTS_KEY = 'ccdesk.defaults'
-const BLANK_SETTINGS = { model: '', permissionMode: 'acceptEdits', allowedTools: [], addDirs: [] }
+const BLANK_SETTINGS = { model: '', permissionMode: 'acceptEdits', allowedTools: [], addDirs: [], askUser: false }
 
 function loadDefaults() {
   try {
@@ -970,6 +1058,7 @@ function openSheet() {
   $('setMode').value = s.permissionMode
   $('setTools').value = s.allowedTools.join(',')
   $('setDirs').value = s.addDirs.join('\n')
+  $('setAsk').checked = Boolean(s.askUser)
   $('setState').textContent = tab.runId
     ? '이미 붙어 있습니다 — 적용하면 프로세스를 다시 띄웁니다 (맥락은 이어집니다)'
     : '아직 안 붙었습니다 — 첫 전송 때 이 설정으로 뜹니다'
@@ -988,6 +1077,7 @@ async function applySheet() {
     permissionMode: $('setMode').value,
     allowedTools: $('setTools').value.split(',').map((x) => x.trim()).filter(Boolean),
     addDirs: $('setDirs').value.split('\n').map((x) => x.trim()).filter(Boolean),
+    askUser: $('setAsk').checked,
   }
   if ($('setDefault').checked) saveDefaults(tab.settings)
 

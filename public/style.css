@@ -528,3 +528,27 @@ details.tool > summary .why { color: var(--bad); }
 .item:hover .pen { opacity: 1; }
 .item .pen:hover { color: var(--accent); background: var(--bg2); }
 .runinfo .est { color: #6f7681; }
+
+/* ── 도구 승인 카드 ─────────────────────────────────── */
+
+.askbar { margin: 0 14px 10px; display: flex; flex-direction: column; gap: 8px; max-height: 320px; overflow-y: auto; }
+.ask {
+  border: 1px solid var(--warn);
+  border-radius: 9px;
+  background: #2a220f;
+  padding: 10px 12px;
+}
+.ask-head { color: var(--warn); font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.ask pre.code { max-height: 160px; margin-bottom: 8px; }
+.ask-foot { display: flex; gap: 8px; }
+.ask-foot button {
+  padding: 5px 16px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg3);
+  cursor: pointer;
+  font-size: 12px;
+}
+.ask-foot button.ok { border-color: var(--ok); color: var(--ok); }
+.ask-foot button:hover { border-color: var(--accent); }
+.sheet .chk { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); }
