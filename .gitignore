@@ -10,6 +10,9 @@ Thumbs.db
 *.local
 settings.local.json
 
+# 내부 작업 메모 — 쓸모 있는 부분은 README 로 옮겼다
+HANDOFF.md
+
 # 에디터
 .vscode/
 .idea/

@@ -177,9 +177,10 @@ function appendText(list, kind, text) {
 /**
  * 실시간 이벤트 하나를 메시지 배열에 반영한다. 배열을 제자리에서 고친다.
  *
- * ⚠️ stream_event 의 내부 모양은 미확인이다(HANDOFF 는 이벤트 이름까지만 실측).
- *    content_block_delta / text_delta 를 가정하고 방어적으로 짰다.
- *    실제 이벤트를 찍어본 뒤 이 함수와 DESIGN.md 3절을 갱신할 것.
+ * stream_event 내부는 실측했다: message_start / content_block_start / content_block_delta /
+ * content_block_stop / message_delta / message_stop. 델타는 delta.text 에 글이 온다.
+ * message_start 를 놓쳐도 되도록 assistant 이벤트가 흘러오던 메시지를 거둬간다.
+ * 자세한 건 README 의 "CLI 를 어떻게 다루는가".
  */
 export function applyEvent(list, ev) {
   if (!ev || typeof ev !== 'object') return list

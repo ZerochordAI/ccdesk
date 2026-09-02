@@ -154,10 +154,90 @@ The following part requires approval: node --check public/app.js
 - 본문 전문 검색 없음 (색인이 필요하다)
 - 설정의 **추가 폴더(`--add-dir`)는 효과를 실측하지 못했다.** 자세한 건 `DESIGN.md` 9.2b
 
+## CLI 를 어떻게 다루는가 — 실측 기록
+
+ccdesk 를 만들며 직접 돌려 확인한 것들이다. 비슷한 걸 만들 사람이 같은 걸 다시 재느라
+시간 쓰지 않도록 적어둔다. 환경은 Windows 11 · Node v22 · claude 2.1.x.
+
+### stream-json 으로 주고받기
+
+```bash
+claude -p --output-format stream-json --input-format stream-json \
+       --include-partial-messages --verbose --permission-mode acceptEdits
+```
+
+- `--verbose` 는 `-p` + stream-json 조합에서 **필수**다. 없으면 안 된다
+- **stdin 은 한 줄에 하나**, 개행으로 끝낸다:
+  ```json
+  {"type":"user","message":{"role":"user","content":[{"type":"text","text":"..."}]}}
+  ```
+- **프로세스가 턴을 넘어 살아 있다.** stdin 을 열어두면 한 프로세스로 여러 턴을 처리하고
+  맥락도 이어진다. 죽었으면 다음 전송 때 `--resume` 으로 되살리면 된다 —
+  기록은 CLI 가 파일에 남기므로 맥락은 유지된다
+- 관측된 이벤트: `system/init` · `system/status` · `system/hook_started` · `system/hook_response` ·
+  `stream_event`(부분 출력) · `assistant` · `rate_limit_event` · `result/success`.
+  **모든 이벤트에 `session_id` 가 붙는다**
+- `system/init` 에 들어 있는 것: `session_id` `cwd` `tools[]` `mcp_servers[]` `model`
+  `permissionMode` `slash_commands[]` `skills[]` `claude_code_version`
+- `result` 에 들어 있는 것: `result`(최종 텍스트) `usage` `total_cost_usd` `duration_ms`
+  `num_turns` `permission_denials[]` `is_error`
+
+### 이미지도 stdin 으로 들어간다
+
+`content` 에 API 형식 그대로 실으면 받는다. **이미지 먼저, 글 나중** 순서로 넣는다.
+
+```json
+{"type":"user","message":{"role":"user","content":[
+  {"type":"image","source":{"type":"base64","media_type":"image/png","data":"..."}},
+  {"type":"text","text":"..."}]}}
+```
+
+### 부분 출력(`stream_event`)의 속
+
+`message_start` · `content_block_start` · `content_block_delta` · `content_block_stop` ·
+`message_delta` · `message_stop` 이 온다. 델타는 이렇게 생겼다:
+
+```json
+{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"..."}}
+```
+
+`message_start` 의 `message.id` 는 뒤에 오는 `assistant` 이벤트의 id 와 **같다.**
+다만 그 id 만 믿으면 안 된다 — 중간에 연결이 끊겼다 붙으면 `message_start` 를 놓친 채
+델타부터 받게 되고, 그러면 조각으로 만든 임시 메시지와 완성본이 따로 남아 **같은 답이 두 번 보인다.**
+
+그리고 `assistant` 이벤트는 **완성본을 통째로** 싣고 오는 반면
+기록 파일은 한 턴을 **여러 줄로 쪼개** 적는다. 앞은 갈아끼워야 하고 뒤는 더해야 한다.
+같은 코드로 처리하면 글이 두 번 쌓인다.
+
+### 세션 기록은 어디에 어떻게 남나
+
+- 위치: `~/.claude/projects/<인코딩된경로>/<sessionId>.jsonl`
+- ⚠️ **폴더명을 역해독하지 마라.** 드라이브 문자 대소문자가 뒤섞이고, 점(`.`)도 하이픈이 되고,
+  하위 폴더 구분자도 하이픈이라 되돌릴 수 없다. 실제로 `...-myapp-web` 은 `myapp-web` 이 아니라
+  `myapp\web` 이었다. **파일 안의 `cwd` 필드를 읽어라.** 그게 언제나 진짜 경로다
+- 한 줄이 JSON 하나. `type` 이 여럿이다 — `user` `assistant` `attachment` `system` `mode`
+  `permission-mode` `file-history-snapshot` `ai-title` `last-prompt` `agent-name` `atis-latch` …
+- `user`/`assistant` 라인의 `message` 는 **Anthropic API 메시지 객체 그대로**다.
+  `content` 가 `text`/`tool_use` 블록 배열이고, `tool_result` 는 **다음 `user` 라인**에 붙는다
+- **`ai-title` 라인에 사람이 읽을 제목이 있다.** 목록에는 이걸 써야 한다.
+  여러 번 갱신되므로 **마지막 것**이 최신이다. 압축된 세션은 첫 사용자 메시지가
+  "This session is being continued…" 라 제목으로 못 쓴다
+- ⚠️ **`mtime` 은 대화가 없어도 갱신된다.** 마지막 대화보다 4일 늦은 파일이 있었다.
+  화면에 쓸 시각은 기록 안의 마지막 `timestamp` 다
+- ⚠️ **파일이 아주 크다.** 이 머신에 374MB·22MB 짜리가 있었다(9만 줄 이상).
+  목록 만들자고 통째로 파싱하면 안 된다. ccdesk 는 앞 128KB·뒤 256KB 만 읽어
+  프로젝트 전체를 60~100ms 에 훑고, 본문은 파일 끝에서 거슬러 올라가며 필요한 턴만 읽는다
+- 하위 `subagents/` 폴더에 서브에이전트 대화가 따로 있다. `isSidechain: true` 로도 구분된다
+
+### 아직 안 재본 것
+
+- macOS·Linux
+- MCP 서버 초기화 시간. `system/init` 에 `status: pending` 인 서버가 있었는데 얼마나 걸리는지 안 쟀다
+- `--add-dir` 의 효과. 있으나 없으나 작업 폴더 밖 파일이 읽혔다 (`DESIGN.md` 9.2b)
+
 ## 문서
 
 - [`DESIGN.md`](DESIGN.md) — v1 설계 계약. 불변 규칙, 메시지 모델, API, 그리고 실측 기록
-- [`HANDOFF.md`](HANDOFF.md) — CLI 의 stream-json 입출력·세션 저장 구조를 직접 재본 기록
 
 ## 라이선스
 

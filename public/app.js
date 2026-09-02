@@ -395,27 +395,138 @@ function newChatCwd() {
 const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ESC[c])
 
-/** R7: 이스케이프가 먼저다. 그 다음에만 우리가 만든 태그를 넣는다. */
-function inline(t) {
-  const s = esc(t)
-    .replace(/`([^`]+)`/g, '<code class="inline">$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-  return '<p>' + s.replace(/\n{2,}/g, '</p><p>').replace(/\n/g, '<br>') + '</p>'
+// 이 셋으로 시작하면 문단이 아니라 블록이다.
+const FENCE_RE = /^\s*```/
+const HEAD_RE = /^\s*(#{1,6})\s+(.*)$/
+const QUOTE_RE = /^\s*>\s?/
+const LIST_RE = /^\s*([-*+]|\d+[.)])\s+/
+const HR_RE = /^\s*(-{3,}|\*{3,}|_{3,})\s*$/
+const ROW_RE = /^\s*\|.*\|\s*$/
+const DIV_RE = /^\s*\|[\s:|-]+\|\s*$/
+
+function isBlockStart(l) {
+  return FENCE_RE.test(l) || HEAD_RE.test(l) || QUOTE_RE.test(l) || LIST_RE.test(l) || HR_RE.test(l) || ROW_RE.test(l)
 }
 
-function mdToHtml(text) {
-  const parts = String(text).split('```')
-  let html = ''
-  for (let i = 0; i < parts.length; i++) {
-    if (i % 2 === 1) {
-      const nl = parts[i].indexOf('\n')
-      const code = nl === -1 ? parts[i] : parts[i].slice(nl + 1)
-      html += '<pre class="code">' + esc(code.replace(/\n+$/, '')) + '</pre>'
-    } else if (parts[i]) {
-      html += inline(parts[i])
+function splitRow(line) {
+  return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|')
+}
+
+/** 링크는 우리가 아는 것만 연다. javascript: 같은 것을 막는다. */
+function safeHref(h) {
+  return /^(https?:\/\/|mailto:|#|\/)/i.test(h.trim())
+}
+
+/**
+ * R7: 이스케이프가 먼저다. 그 다음에만 우리가 만든 태그를 넣는다.
+ * 인라인 코드는 먼저 빼내 둔다 — 그 안의 별표나 대괄호를 문법으로 오해하면 안 된다.
+ */
+function inline(t) {
+  let s = esc(t)
+  const codes = []
+  const MARK = String.fromCharCode(0xe000)
+  s = s.replace(/`([^`]+)`/g, (_, c) => {
+    codes.push(c)
+    return MARK + (codes.length - 1) + MARK
+  })
+  s = s
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*\w])\*([^*\n]+)\*/g, '$1<em>$2</em>')
+    .replace(/~~([^~]+)~~/g, '<del>$1</del>')
+    .replace(/\[([^\]]*)\]\(([^)\s]+)\)/g, (m, txt, href) =>
+      safeHref(href) ? '<a href="' + href + '" target="_blank" rel="noreferrer noopener">' + (txt || href) + '</a>' : m
+    )
+  s = s.replace(new RegExp(MARK + '([0-9]+)' + MARK, 'g'), (_, n) => '<code class="inline">' + codes[n] + '</code>')
+  return s.replace(/\n/g, '<br>')
+}
+
+/** 의존성 없이 직접 쓴 마크다운. 헤딩·목록·표·인용·코드·수평선·링크까지. */
+function mdToHtml(src) {
+  const lines = String(src).replace(/\r\n?/g, '\n').split('\n')
+  const out = []
+  let i = 0
+
+  while (i < lines.length) {
+    const line = lines[i]
+
+    if (FENCE_RE.test(line)) {
+      const body = []
+      i++
+      while (i < lines.length && !FENCE_RE.test(lines[i])) body.push(lines[i++])
+      i++ // 닫는 펜스
+      out.push('<pre class="code">' + esc(body.join('\n')) + '</pre>')
+      continue
     }
+
+    // 표: 머리줄 다음에 구분줄이 와야 표로 본다
+    if (ROW_RE.test(line) && i + 1 < lines.length && DIV_RE.test(lines[i + 1])) {
+      const head = splitRow(line)
+      const align = splitRow(lines[i + 1]).map((c) => {
+        const t = c.trim()
+        if (/^:-+:$/.test(t)) return ' style="text-align:center"'
+        if (/-+:$/.test(t)) return ' style="text-align:right"'
+        return ''
+      })
+      i += 2
+      const rows = []
+      while (i < lines.length && ROW_RE.test(lines[i])) rows.push(splitRow(lines[i++]))
+      let h = '<table><thead><tr>'
+      head.forEach((c, k) => (h += '<th' + (align[k] || '') + '>' + inline(c.trim()) + '</th>'))
+      h += '</tr></thead><tbody>'
+      for (const r of rows) {
+        h += '<tr>'
+        r.forEach((c, k) => (h += '<td' + (align[k] || '') + '>' + inline(c.trim()) + '</td>'))
+        h += '</tr>'
+      }
+      out.push(h + '</tbody></table>')
+      continue
+    }
+
+    if (HR_RE.test(line)) {
+      out.push('<hr>')
+      i++
+      continue
+    }
+
+    const h = line.match(HEAD_RE)
+    if (h) {
+      const n = h[1].length
+      out.push('<h' + n + '>' + inline(h[2]) + '</h' + n + '>')
+      i++
+      continue
+    }
+
+    if (QUOTE_RE.test(line)) {
+      const body = []
+      while (i < lines.length && QUOTE_RE.test(lines[i])) body.push(lines[i++].replace(QUOTE_RE, ''))
+      out.push('<blockquote>' + mdToHtml(body.join('\n')) + '</blockquote>')
+      continue
+    }
+
+    if (LIST_RE.test(line)) {
+      const ordered = /^\s*\d+[.)]\s+/.test(line)
+      const items = []
+      while (i < lines.length && LIST_RE.test(lines[i])) {
+        let item = lines[i++].replace(LIST_RE, '')
+        // 들여쓴 다음 줄은 같은 항목으로 본다
+        while (i < lines.length && /^\s{2,}\S/.test(lines[i]) && !LIST_RE.test(lines[i])) item += '\n' + lines[i++].trim()
+        items.push('<li>' + inline(item) + '</li>')
+      }
+      out.push((ordered ? '<ol>' : '<ul>') + items.join('') + (ordered ? '</ol>' : '</ul>'))
+      continue
+    }
+
+    if (!line.trim()) {
+      i++
+      continue
+    }
+
+    const para = []
+    while (i < lines.length && lines[i].trim() && !isBlockStart(lines[i])) para.push(lines[i++])
+    out.push('<p>' + inline(para.join('\n')) + '</p>')
   }
-  return html
+
+  return out.join('')
 }
 
 function toolEl(b, tab) {
