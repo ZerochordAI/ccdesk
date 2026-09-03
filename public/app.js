@@ -8,7 +8,7 @@
 import { applyEvent, appendHistory } from '/normalize.js'
 
 // 브라우저가 새 파일을 받았는지 눈으로 확인하려고 박아둔다. 고칠 때마다 올린다.
-const BUILD = 'b8'
+const BUILD = 'b9'
 
 const TOKEN = new URL(location.href).searchParams.get('t') || ''
 const $ = (id) => document.getElementById(id)
@@ -480,6 +480,13 @@ function renderAsks() {
     pre.className = 'code'
     pre.textContent = JSON.stringify(ask.input, null, 2)
     card.append(pre)
+
+    if (ask.inputTruncated) {
+      const note = document.createElement('div')
+      note.className = 'ask-note'
+      note.textContent = '인자가 너무 커서 보여주기용으로 줄였습니다. 실행에는 원본이 그대로 쓰입니다.'
+      card.append(note)
+    }
 
     const foot = document.createElement('div')
     foot.className = 'ask-foot'
@@ -1228,6 +1235,9 @@ async function send() {
 }
 
 async function deliver(tab, text, imgs) {
+  // 실패하면 되돌려 놓을 수 있게 들고 있는다. 줄 서 있던 것을 합쳐 보내는 경우
+  // 실패 한 번에 여러 개가 한꺼번에 사라지기 때문이다.
+  const sent = { text, imgs }
   tab.messages.push({
     id: 'u' + Date.now(),
     role: 'human',
@@ -1248,7 +1258,18 @@ async function deliver(tab, text, imgs) {
     tab.busy = false
     tab.messages.push({ id: 'e' + Date.now(), role: 'notice', blocks: [{ type: 'notice', level: 'error', text: e.message }] })
     render(tab)
-    // 줄 서 있던 것은 그대로 둔다. 같은 이유로 또 실패할 테니 사용자가 보고 정하게 한다.
+    // 보내던 글을 입력칸으로 되돌린다. 그러지 않으면 합쳐 보낸 여러 건이
+    // 한꺼번에 사라지고 사용자가 다시 칠 수밖에 없다.
+    if (tab === state.active) {
+      const cur = $('input').value
+      $('input').value = cur ? sent.text + '\n\n' + cur : sent.text
+      tab.images = sent.imgs.concat(tab.images)
+      renderAttach()
+      autosize()
+    } else {
+      tab.draft = sent.text + (tab.draft ? '\n\n' + tab.draft : '')
+      tab.images = sent.imgs.concat(tab.images)
+    }
     renderQueue()
   }
 }

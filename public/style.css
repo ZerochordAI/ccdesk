@@ -573,3 +573,4 @@ details.tool > summary .why { color: var(--bad); }
   cursor: pointer;
 }
 .queue .qclear:hover { color: var(--bad); border-color: var(--bad); }
+.ask .ask-note { font-size: 11px; color: var(--dim); margin: -4px 0 8px; }

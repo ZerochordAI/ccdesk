@@ -11,7 +11,7 @@
 import { createServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
-import { existsSync, writeFileSync } from 'node:fs'
+import { existsSync, writeFileSync, readdirSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve, extname, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -76,6 +76,18 @@ function readBody(req, limit = 1024 * 1024) {
     })
     req.on('error', fail)
   })
+}
+
+/**
+ * 승인 창구(lib/mcp-approve.js)만 통과시키는 좁은 열쇠.
+ * 마스터 토큰을 주지 않으므로, 설정 파일이 새더라도 할 수 있는 일은
+ * "그 run 에 승인 물음을 띄우는 것" 하나뿐이다.
+ */
+function askAuthorized(req) {
+  const k = req.headers['x-ccdesk-ask']
+  if (!k) return null
+  for (const [id, rec] of runs) if (rec.askSecret && rec.askSecret === k) return id
+  return null
 }
 
 /** R8: 토큰과 Origin 을 함께 본다. 토큰은 URL 에만 있으므로 남의 페이지는 못 읽는다. */
@@ -191,14 +203,17 @@ async function handleApi(req, res, url) {
 
   // MCP 창구가 물어온다. 사용자가 누를 때까지 이 응답을 닫지 않는다.
   if (p === '/api/asks' && req.method === 'POST') {
-    const b = await readBody(req)
+    // 도구 인자가 클 수 있다(큰 파일을 쓰는 Write 등). 기본 1MB 로 두면
+    // 큰 작업이 물어보지도 못한 채 거부된다. send 와 같은 한도로 맞춘다.
+    const b = await readBody(req, 24 * 1024 * 1024)
     const askId = randomUUID()
     const wait = Math.min(Math.max(Number(b.waitMs) || 600000, 5000), 30 * 60 * 1000)
     const rec = {
-      runId: b.runId,
+      runId: req.ccdeskAskRunId || b.runId,
       toolName: String(b.toolName || '(이름 없음)'),
       input: b.input ?? {},
       toolUseId: b.toolUseId || null,
+      inputTruncated: Boolean(b.inputTruncated),
       res,
       at: Date.now(),
     }
@@ -207,7 +222,7 @@ async function handleApi(req, res, url) {
     broadcast(rec.runId, {
       type: 'ccdesk',
       level: 'ask',
-      ask: { id: askId, toolName: rec.toolName, input: rec.input, toolUseId: rec.toolUseId },
+      ask: { id: askId, toolName: rec.toolName, input: rec.input, toolUseId: rec.toolUseId, inputTruncated: rec.inputTruncated },
     })
     return // 응답은 finishAsk 가 보낸다
   }
@@ -278,6 +293,7 @@ async function handleApi(req, res, url) {
     // 창구 없이 띄우면 승인이 필요한 순간 되묻지 않고 그냥 거부된다.
     let mcpConfigPath = null
     let permissionPromptTool = null
+    const askSecret = randomUUID()
     if (b.askUser) {
       const cfg = {
         mcpServers: {
@@ -286,7 +302,10 @@ async function handleApi(req, res, url) {
             args: [join(ROOT, 'lib', 'mcp-approve.js')],
             env: {
               CCDESK_URL: 'http://' + HOST + ':' + port,
-              CCDESK_TOKEN: TOKEN,
+              // ⚠️ 마스터 토큰을 넣지 않는다. 이 파일은 디스크에 남고, 토큰이 새면
+              //    임의 경로에서 bypassPermissions 실행까지 열린다(R8).
+              //    대신 이 run 의 승인 물음만 통과시키는 비밀값을 준다.
+              CCDESK_ASK_SECRET: askSecret,
               CCDESK_RUN: runId,
             },
           },
@@ -310,10 +329,13 @@ async function handleApi(req, res, url) {
     run.on('event', (ev) => {
       const rec = runs.get(runId)
       if (rec) rec.sessionId = run.sessionId
+      // 턴이 끝났으면 아직 떠 있는 승인 물음은 의미가 없다.
+      // 안 닫으면 카드가 화면에 남고 MCP 쪽은 시간이 다 갈 때까지 붙들려 있는다.
+      if (ev.type === 'result') cancelAsksOf(runId)
       broadcast(runId, ev)
     })
     // R4: 여기서는 아직 프로세스가 뜨지 않는다. 첫 send() 에서 뜬다.
-    runs.set(runId, { run, cwd: b.cwd, sessionId: run.sessionId })
+    runs.set(runId, { run, cwd: b.cwd, sessionId: run.sessionId, askSecret })
     // 실제로 적용된 값을 돌려준다 — 버려진 항목이 있으면 화면이 그대로 보여줄 수 있게.
     return sendJson(res, 200, {
       runId,
@@ -339,7 +361,11 @@ async function handleApi(req, res, url) {
       if (!ok) return sendJson(res, 409, { error: '아직 앞 턴이 끝나지 않았습니다' })
       return sendJson(res, 200, { ok: true, sessionId: rec.run.sessionId })
     }
-    if (rm[2] === '/interrupt' && req.method === 'POST') return sendJson(res, 200, { ok: rec.run.interrupt() })
+    if (rm[2] === '/interrupt' && req.method === 'POST') {
+      // 승인을 기다리느라 멈춰 있을 수 있다. 먼저 풀어줘야 중단이 먹는다.
+      cancelAsksOf(rm[1])
+      return sendJson(res, 200, { ok: rec.run.interrupt() })
+    }
     if (!rm[2] && req.method === 'DELETE') {
       cancelAsksOf(rm[1])
       rec.run.stop()
@@ -432,7 +458,10 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://' + HOST + ':' + port)
   try {
     if (url.pathname.startsWith('/api/')) {
-      if (!authorized(req, url)) return sendJson(res, 403, { error: '토큰이 필요합니다' })
+      // 승인 창구는 좁은 열쇠로 들어온다. 그 밖에는 전부 마스터 토큰이 있어야 한다.
+      const askRunId = url.pathname === '/api/asks' ? askAuthorized(req) : null
+      if (!askRunId && !authorized(req, url)) return sendJson(res, 403, { error: '토큰이 필요합니다' })
+      if (askRunId) req.ccdeskAskRunId = askRunId
       return await handleApi(req, res, url)
     }
     return await serveStatic(req, res, url)
@@ -455,6 +484,15 @@ server.on('error', (e) => {
   }
   throw e
 })
+
+// 지난번에 남은 승인 설정 파일을 치운다. 접속 정보가 담겨 있어 오래 두면 안 된다.
+try {
+  for (const f of readdirSync(tmpdir())) {
+    if (/^ccdesk-mcp-.*\.json$/.test(f)) unlinkSync(join(tmpdir(), f))
+  }
+} catch {
+  /* 못 지워도 계속 간다 */
+}
 
 server.listen(port, HOST, () => {
   port = server.address().port
