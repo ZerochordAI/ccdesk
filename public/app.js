@@ -8,7 +8,7 @@
 import { applyEvent, appendHistory } from '/normalize.js'
 
 // 브라우저가 새 파일을 받았는지 눈으로 확인하려고 박아둔다. 고칠 때마다 올린다.
-const BUILD = 'b14'
+const BUILD = 'b15'
 
 const TOKEN = new URL(location.href).searchParams.get('t') || ''
 const $ = (id) => document.getElementById(id)
@@ -1293,12 +1293,19 @@ function renderRunInfo() {
 /**
  * 권한 모드에 어울리는 물어보기 기본값.
  *
- * 편집허용·기본은 승인이 실제로 필요한 자리라 둘 다 켠다.
- * 전체허용은 미리 다 허용하므로 승인이 뜰 일이 없고, 읽기전용은 건드릴 게 없다 —
- * 그 둘에서는 승인만 끈다. 선택지는 권한과 무관하므로 늘 켜둔다.
+ * 승인 — 편집허용·기본은 승인이 실제로 필요한 자리라 켠다.
+ *        전체허용은 미리 다 허용하므로 뜰 일이 없고, 읽기전용은 건드릴 게 없다.
+ *
+ * 선택지 — 권한과 무관해 보이지만 **읽기전용에서는 안 된다.**
+ *          plan 모드는 MCP 도구 호출 자체를 막는다(2026-09-03 실측):
+ *          "Cannot call mcp__ccdesk__ask_choice while in plan mode".
+ *          도구 목록에는 보이는데 부르면 거부된다. 켜봐야 거부 기록만 남으므로 끈다.
  */
 function asksForMode(mode) {
-  return { askUser: mode === 'acceptEdits' || mode === 'default', askChoice: true }
+  return {
+    askUser: mode === 'acceptEdits' || mode === 'default',
+    askChoice: mode !== 'plan',
+  }
 }
 
 /** 서로 무효로 만드는 설정 조합을 그 자리에서 알려준다. 안 그러면 켜놓고 안 된다고 여긴다. */
@@ -1309,6 +1316,8 @@ function updateSheetNote() {
   // 서로 부딪히는 조합일 때만 적는다. 기본 상태까지 설명하면 잔소리가 된다.
   if (asking && mode === 'bypassPermissions') {
     el.textContent = '전체허용은 전부 미리 허용하는 모드라 물어볼 일이 없습니다. 물어보게 하려면 기본이나 편집허용을 고르세요.'
+  } else if (mode === 'plan' && $('setChoice').checked) {
+    el.textContent = '읽기전용은 MCP 도구 호출을 막습니다. 선택지를 켜도 거부만 되니 꺼두세요.'
   } else if (asking && mode === 'plan') {
     el.textContent = '읽기전용은 편집·실행을 아예 안 하므로 물어볼 일이 거의 없습니다.'
   } else {
@@ -1612,6 +1621,7 @@ $('settingsBtn').onclick = () => {
 $('setClose').onclick = () => ($('sheet').hidden = true)
 $('setApply').onclick = applySheet
 $('setAsk').onchange = updateSheetNote
+$('setChoice').onchange = updateSheetNote
 $('setMode').onchange = () => {
   // 권한을 바꾸면 그 모드에 맞는 기본값으로 체크를 맞춰준다.
   // 사용자가 그 뒤에 직접 끄면 그건 그대로 존중한다 — 여기서만 손댄다.

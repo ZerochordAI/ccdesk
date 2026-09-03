@@ -524,6 +524,11 @@ const server = createServer(async (req, res) => {
 
 // 포트가 물려 있으면 다음 포트로 넘어간다. 앞서 띄운 게 남아 있다고 못 뜨면 곤란하다.
 const FIRST_PORT = port
+// 유휴 소켓을 5초 만에 닫으면, 뜸하게 오는 승인 요청이 닫힌 소켓을 물고 "fetch failed" 로 떨어진다.
+// 로컬 전용 서버라 넉넉히 열어둔다. 창구 쪽에서도 재시도하지만 원인을 여기서 줄인다.
+server.keepAliveTimeout = 120 * 1000
+server.headersTimeout = 125 * 1000
+
 server.on('error', (e) => {
   if (e.code === 'EADDRINUSE' && port < FIRST_PORT + 10) {
     port += 1
