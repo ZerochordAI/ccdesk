@@ -34,7 +34,7 @@ const HOST = '127.0.0.1'
 
 const runs = new Map() // runId -> { run, cwd, sessionId }
 const clients = new Set() // SSE 응답들
-// 도구 승인 대기소. MCP 창구(lib/mcp-approve.js)가 물어오면 여기 담아두고,
+// 도구 승인 대기소. MCP 창구(lib/mcp-ccdesk.js)가 물어오면 여기 담아두고,
 // 사용자가 화면에서 누를 때까지 그 HTTP 응답을 붙들고 있는다.
 const asks = new Map() // askId -> { runId, res, timer, ... }
 let port = Number(process.env.CCDESK_PORT || 4317)
@@ -79,7 +79,7 @@ function readBody(req, limit = 1024 * 1024) {
 }
 
 /**
- * 승인 창구(lib/mcp-approve.js)만 통과시키는 좁은 열쇠.
+ * 승인 창구(lib/mcp-ccdesk.js)만 통과시키는 좁은 열쇠.
  * 마스터 토큰을 주지 않으므로, 설정 파일이 새더라도 할 수 있는 일은
  * "그 run 에 승인 물음을 띄우는 것" 하나뿐이다.
  */
@@ -129,7 +129,8 @@ function finishAsk(askId, answer) {
 /** run 이 사라지면 그 run 의 물음도 거부로 닫는다. 안 그러면 MCP 쪽이 영영 기다린다. */
 function cancelAsksOf(runId) {
   for (const [id, rec] of [...asks]) {
-    if (rec.runId === runId) finishAsk(id, { behavior: 'deny', message: '대화가 닫혔습니다' })
+    if (rec.runId !== runId) continue
+    finishAsk(id, rec.kind === 'choice' ? { choice: '', message: '대화가 닫혔습니다' } : { behavior: 'deny', message: '대화가 닫혔습니다' })
   }
 }
 
@@ -210,19 +211,43 @@ async function handleApi(req, res, url) {
     const wait = Math.min(Math.max(Number(b.waitMs) || 600000, 5000), 30 * 60 * 1000)
     const rec = {
       runId: req.ccdeskAskRunId || b.runId,
+      kind: b.kind === 'choice' ? 'choice' : 'permission',
+      // 승인용
       toolName: String(b.toolName || '(이름 없음)'),
       input: b.input ?? {},
       toolUseId: b.toolUseId || null,
       inputTruncated: Boolean(b.inputTruncated),
+      // 선택용
+      question: typeof b.question === 'string' ? b.question : '',
+      options: Array.isArray(b.options) ? b.options.slice(0, 5) : [],
       res,
       at: Date.now(),
     }
-    rec.timer = setTimeout(() => finishAsk(askId, { behavior: 'deny', message: '시간이 지나 자동으로 거부했습니다' }), wait)
+    // 시간이 다 가면 — 승인은 거부로, 선택은 "안 고름" 으로 닫는다.
+    rec.timer = setTimeout(
+      () =>
+        finishAsk(
+          askId,
+          rec.kind === 'choice'
+            ? { choice: '', message: '시간이 지나 답을 받지 못했습니다' }
+            : { behavior: 'deny', message: '시간이 지나 자동으로 거부했습니다' }
+        ),
+      wait
+    )
     asks.set(askId, rec)
     broadcast(rec.runId, {
       type: 'ccdesk',
       level: 'ask',
-      ask: { id: askId, toolName: rec.toolName, input: rec.input, toolUseId: rec.toolUseId, inputTruncated: rec.inputTruncated },
+      ask: {
+        id: askId,
+        kind: rec.kind,
+        toolName: rec.toolName,
+        input: rec.input,
+        toolUseId: rec.toolUseId,
+        inputTruncated: rec.inputTruncated,
+        question: rec.question,
+        options: rec.options,
+      },
     })
     return // 응답은 finishAsk 가 보낸다
   }
@@ -230,11 +255,15 @@ async function handleApi(req, res, url) {
   const am = p.match(/^\/api\/asks\/([^/]+)\/answer$/)
   if (am && req.method === 'POST') {
     const b = await readBody(req)
-    const ok = finishAsk(decodeURIComponent(am[1]), {
-      behavior: b.behavior === 'allow' ? 'allow' : 'deny',
-      updatedInput: b.updatedInput && typeof b.updatedInput === 'object' ? b.updatedInput : undefined,
-      message: b.message || undefined,
-    })
+    const answer =
+      typeof b.choice === 'string'
+        ? { choice: b.choice, note: typeof b.note === 'string' ? b.note : undefined }
+        : {
+            behavior: b.behavior === 'allow' ? 'allow' : 'deny',
+            updatedInput: b.updatedInput && typeof b.updatedInput === 'object' ? b.updatedInput : undefined,
+            message: b.message || undefined,
+          }
+    const ok = finishAsk(decodeURIComponent(am[1]), answer)
     return sendJson(res, ok ? 200 : 404, ok ? { ok: true } : { error: '이미 끝난 물음입니다' })
   }
 
@@ -294,12 +323,12 @@ async function handleApi(req, res, url) {
     let mcpConfigPath = null
     let permissionPromptTool = null
     const askSecret = randomUUID()
-    if (b.askUser) {
+    if (b.askUser || b.askChoice) {
       const cfg = {
         mcpServers: {
           ccdesk: {
             command: process.execPath,
-            args: [join(ROOT, 'lib', 'mcp-approve.js')],
+            args: [join(ROOT, 'lib', 'mcp-ccdesk.js')],
             env: {
               CCDESK_URL: 'http://' + HOST + ':' + port,
               // ⚠️ 마스터 토큰을 넣지 않는다. 이 파일은 디스크에 남고, 토큰이 새면
@@ -307,13 +336,15 @@ async function handleApi(req, res, url) {
               //    대신 이 run 의 승인 물음만 통과시키는 비밀값을 준다.
               CCDESK_ASK_SECRET: askSecret,
               CCDESK_RUN: runId,
+              CCDESK_TOOL_APPROVE: b.askUser ? '1' : '0',
+              CCDESK_TOOL_CHOICE: b.askChoice ? '1' : '0',
             },
           },
         },
       }
       mcpConfigPath = join(tmpdir(), 'ccdesk-mcp-' + runId + '.json')
       writeFileSync(mcpConfigPath, JSON.stringify(cfg), 'utf8')
-      permissionPromptTool = 'mcp__ccdesk__approve'
+      if (b.askUser) permissionPromptTool = 'mcp__ccdesk__approve'
     }
 
     const run = new Run({
@@ -345,6 +376,7 @@ async function handleApi(req, res, url) {
       allowedTools: run.allowedTools,
       addDirs: run.addDirs,
       askUser: Boolean(permissionPromptTool),
+      askChoice: Boolean(b.askChoice),
     })
   }
 

@@ -8,7 +8,7 @@
 import { applyEvent, appendHistory } from '/normalize.js'
 
 // 브라우저가 새 파일을 받았는지 눈으로 확인하려고 박아둔다. 고칠 때마다 올린다.
-const BUILD = 'b10'
+const BUILD = 'b11'
 
 const TOKEN = new URL(location.href).searchParams.get('t') || ''
 const $ = (id) => document.getElementById(id)
@@ -473,6 +473,12 @@ function renderAsks() {
   if (box.hidden) return
 
   for (const ask of list) {
+    // 모델이 내민 선택지는 승인 카드와 생김새가 달라야 한다. 성격이 다르다.
+    if (ask.kind === 'choice') {
+      box.append(choiceCard(tab, ask))
+      continue
+    }
+
     const card = document.createElement('div')
     card.className = 'ask'
 
@@ -506,6 +512,60 @@ function renderAsks() {
     card.append(foot)
 
     box.append(card)
+  }
+}
+
+/** 모델이 내민 선택지. 누르면 그 label 이 도구 결과로 돌아간다. */
+function choiceCard(tab, ask) {
+  const card = document.createElement('div')
+  card.className = 'ask choice'
+
+  const head = document.createElement('div')
+  head.className = 'ask-head'
+  head.textContent = ask.question || '골라 주세요'
+  card.append(head)
+
+  const box = document.createElement('div')
+  box.className = 'choices'
+  for (const opt of ask.options || []) {
+    const b = document.createElement('button')
+    const label = document.createElement('span')
+    label.className = 'lb'
+    label.textContent = opt.label
+    b.append(label)
+    if (opt.description) {
+      const d = document.createElement('span')
+      d.className = 'ds'
+      d.textContent = opt.description
+      b.append(d)
+    }
+    b.onclick = () => sendChoice(tab, ask, opt.label)
+    box.append(b)
+  }
+  card.append(box)
+
+  const foot = document.createElement('div')
+  foot.className = 'ask-foot'
+  const skip = document.createElement('button')
+  skip.textContent = '직접 쓰기'
+  skip.title = '고르지 않고 입력칸에 직접 답합니다'
+  skip.onclick = () => sendChoice(tab, ask, '')
+  foot.append(skip)
+  card.append(foot)
+  return card
+}
+
+async function sendChoice(tab, ask, choice) {
+  tab.asks = tab.asks.filter((x) => x.id !== ask.id)
+  renderAsks()
+  try {
+    await api('/api/asks/' + encodeURIComponent(ask.id) + '/answer', {
+      method: 'POST',
+      body: JSON.stringify({ choice }),
+    })
+  } catch (e) {
+    tab.messages.push({ id: 'e' + Date.now(), role: 'notice', blocks: [{ type: 'notice', level: 'error', text: '답을 보내지 못했습니다: ' + e.message }] })
+    render(tab)
   }
 }
 
@@ -966,6 +1026,7 @@ async function ensureRun(tab) {
       allowedTools: s.allowedTools,
       addDirs: s.addDirs,
       askUser: Boolean(s.askUser),
+      askChoice: Boolean(s.askChoice),
     }),
   })
   tab.runId = data.runId
@@ -977,6 +1038,7 @@ async function ensureRun(tab) {
     allowedTools: data.allowedTools || [],
     addDirs: data.addDirs || [],
     askUser: Boolean(data.askUser),
+    askChoice: Boolean(data.askChoice),
   }
   renderRunInfo()
   return tab.runId
@@ -985,7 +1047,7 @@ async function ensureRun(tab) {
 // ── 설정 ──────────────────────────────────────────────────────────
 
 const DEFAULTS_KEY = 'ccdesk.defaults'
-const BLANK_SETTINGS = { model: '', permissionMode: 'acceptEdits', allowedTools: [], addDirs: [], askUser: false }
+const BLANK_SETTINGS = { model: '', permissionMode: 'acceptEdits', allowedTools: [], addDirs: [], askUser: false, askChoice: false }
 
 function loadDefaults() {
   try {
@@ -1150,6 +1212,7 @@ function openSheet() {
   $('setTools').value = s.allowedTools.join(',')
   $('setDirs').value = s.addDirs.join('\n')
   $('setAsk').checked = Boolean(s.askUser)
+  $('setChoice').checked = Boolean(s.askChoice)
   $('setState').textContent = tab.runId
     ? '이미 붙어 있습니다 — 적용하면 프로세스를 다시 띄웁니다 (맥락은 이어집니다)'
     : '아직 안 붙었습니다 — 첫 전송 때 이 설정으로 뜹니다'
@@ -1169,6 +1232,7 @@ async function applySheet() {
     allowedTools: $('setTools').value.split(',').map((x) => x.trim()).filter(Boolean),
     addDirs: $('setDirs').value.split('\n').map((x) => x.trim()).filter(Boolean),
     askUser: $('setAsk').checked,
+    askChoice: $('setChoice').checked,
   }
   if ($('setDefault').checked) saveDefaults(tab.settings)
 
