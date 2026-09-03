@@ -8,7 +8,7 @@
 import { applyEvent, appendHistory } from '/normalize.js'
 
 // 브라우저가 새 파일을 받았는지 눈으로 확인하려고 박아둔다. 고칠 때마다 올린다.
-const BUILD = 'b13'
+const BUILD = 'b14'
 
 const TOKEN = new URL(location.href).searchParams.get('t') || ''
 const $ = (id) => document.getElementById(id)
@@ -538,11 +538,30 @@ async function loadMessages(tab, before) {
  * 도구 승인 카드. 답하기 전에는 대화가 멈춰 있으므로 눈에 띄는 자리에 둔다.
  * 답을 보내면 서버가 붙들고 있던 MCP 쪽 응답을 그제야 돌려준다.
  */
+// 카드에 뜬 단추를 1~9 로 부를 수 있게 모아둔다. CLI 처럼 숫자만 눌러 답한다.
+// 카드가 여럿이면 위에서부터 이어서 번호가 붙는다. 10번째부터는 눌러야 한다.
+let askKeys = []
+
+/** 단추에 번호를 달고 그 번호로도 부를 수 있게 한다. */
+function keyed(btn, run, badgeHost) {
+  btn.onclick = run
+  if (askKeys.length >= 9) return btn
+  const n = askKeys.length + 1
+  askKeys.push(run)
+  const k = document.createElement('span')
+  k.className = 'key'
+  k.textContent = n
+  ;(badgeHost || btn).prepend(k)
+  btn.title = (btn.title ? btn.title + ' · ' : '') + n + ' 키로도 됩니다'
+  return btn
+}
+
 function renderAsks() {
   const box = $('askbar')
   const tab = state.active
   const list = tab ? tab.asks : []
   box.replaceChildren()
+  askKeys = []
   box.hidden = !list.length
   if (box.hidden) return
 
@@ -578,14 +597,24 @@ function renderAsks() {
     const allow = document.createElement('button')
     allow.className = 'ok'
     allow.textContent = '허용'
-    allow.onclick = () => answerAsk(tab, ask, 'allow')
+    keyed(allow, () => answerAsk(tab, ask, 'allow'))
     const deny = document.createElement('button')
     deny.textContent = '거부'
-    deny.onclick = () => answerAsk(tab, ask, 'deny')
+    keyed(deny, () => answerAsk(tab, ask, 'deny'))
     foot.append(allow, deny)
     card.append(foot)
 
     box.append(card)
+  }
+
+  if (askKeys.length) {
+    const hint = document.createElement('div')
+    hint.className = 'keyhint'
+    hint.textContent = '숫자키 1~' + askKeys.length + ' 로도 고를 수 있습니다'
+    box.append(hint)
+    // 숫자키가 곧바로 먹도록 입력칸에서 손을 뗀다.
+    // 쓰던 글이 있으면 건드리지 않는다 — 그건 사용자 것이다.
+    if (!$('input').value && document.activeElement === $('input')) $('input').blur()
   }
 }
 
@@ -613,7 +642,8 @@ function choiceCard(tab, ask) {
       d.textContent = opt.description
       b.append(d)
     }
-    b.onclick = () => sendChoice(tab, ask, opt.label)
+    // 번호는 글자 줄에 붙인다 — 단추가 세로 배치라 앞에 두면 줄이 하나 더 생긴다.
+    keyed(b, () => sendChoice(tab, ask, opt.label), label)
     box.append(b)
   }
   card.append(box)
@@ -623,7 +653,7 @@ function choiceCard(tab, ask) {
   const skip = document.createElement('button')
   skip.textContent = '직접 쓰기'
   skip.title = '고르지 않고 입력칸에 직접 답합니다'
-  skip.onclick = () => sendChoice(tab, ask, '')
+  keyed(skip, () => sendChoice(tab, ask, ''))
   foot.append(skip)
   card.append(foot)
   return card
@@ -1535,6 +1565,18 @@ for (const r of document.querySelectorAll('input[name=scope]')) {
     refresh()
   }
 }
+
+// 카드가 떠 있으면 숫자키로 답한다. 글을 치는 중에는 방해하지 않는다.
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return
+  if (!/^[1-9]$/.test(e.key)) return
+  const t = e.target
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return
+  const run = askKeys[Number(e.key) - 1]
+  if (!run) return
+  e.preventDefault()
+  run()
+})
 
 $('deepBtn').onclick = runDeepSearch
 

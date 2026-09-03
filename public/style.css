@@ -639,3 +639,24 @@ details.tool > summary .why { color: var(--bad); }
   line-height: 1.5;
 }
 .snip.human { border-left-color: var(--accent); }
+
+/* 숫자키 안내 */
+.key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 15px;
+  height: 15px;
+  margin-right: 6px;
+  padding: 0 3px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: #0b0c0f;
+  color: var(--dim);
+  font: 10px/1 "Cascadia Mono", Consolas, monospace;
+  flex: none;
+}
+.ask-foot button:hover .key,
+.choices button:hover .key { color: var(--fg); border-color: var(--accent); }
+.choices .lb { display: flex; align-items: center; }
+.keyhint { font-size: 10.5px; color: #5d646e; padding-left: 2px; }
