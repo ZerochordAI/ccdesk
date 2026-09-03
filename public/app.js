@@ -8,7 +8,7 @@
 import { applyEvent, appendHistory } from '/normalize.js'
 
 // 브라우저가 새 파일을 받았는지 눈으로 확인하려고 박아둔다. 고칠 때마다 올린다.
-const BUILD = 'b11'
+const BUILD = 'b13'
 
 const TOKEN = new URL(location.href).searchParams.get('t') || ''
 const $ = (id) => document.getElementById(id)
@@ -24,6 +24,7 @@ const state = {
   sessions: [],
   roots: [],
   expanded: new Set(), // 펼쳐둔 프로젝트 경로. 기본은 전부 접힘 — 처음엔 경로만 보인다.
+  deep: null, // 본문 검색 결과. null 이면 평소 목록을 보여준다
   tabs: [], // { id, sessionId, cwd, title, runId, messages, cursor, hasMore, follow, draft, unread, busy, el }
   active: null,
 }
@@ -186,6 +187,9 @@ function renderList() {
   const list = $('list')
   list.replaceChildren()
 
+  // 본문 검색 결과가 있으면 그것을 보여준다.
+  if (state.deep) return renderDeep(list)
+
   const groups = new Map()
   for (const s of state.sessions) {
     const key = s.cwd || s.encodedDir
@@ -290,6 +294,76 @@ async function renameSession(sessionId, current) {
   } catch (e) {
     alert('이름을 바꾸지 못했습니다: ' + e.message)
   }
+}
+
+/** 본문에서 찾기. 색인이 없으므로 최근 것들의 뒤쪽만 본다 — 그 한계를 화면에 적는다. */
+async function runDeepSearch() {
+  const q = state.q.trim()
+  if (!q) return
+  $('deepBtn').disabled = true
+  $('deepBtn').textContent = '찾는 중…'
+  try {
+    const p = new URLSearchParams({ q, scope: state.scope, path: state.path })
+    state.deep = await api('/api/search?' + p)
+    state.deep.q = q
+  } catch (e) {
+    state.deep = { results: [], scanned: 0, total: 0, partial: false, q, error: e.message }
+  }
+  $('deepBtn').disabled = false
+  $('deepBtn').textContent = '본문에서 찾기'
+  renderList()
+}
+
+function renderDeep(list) {
+  const d = state.deep
+
+  const head = document.createElement('div')
+  head.className = 'deephead'
+  const t = document.createElement('span')
+  t.textContent = d.error
+    ? '찾지 못했습니다: ' + d.error
+    : '본문 결과 ' + d.results.length + '건 · 최근 ' + d.scanned + '개 대화를 봤습니다'
+  const back = document.createElement('button')
+  back.textContent = '목록으로'
+  back.onclick = () => {
+    state.deep = null
+    renderList()
+  }
+  head.append(t, back)
+  list.append(head)
+
+  if (d.partial) {
+    const note = document.createElement('div')
+    note.className = 'deepnote'
+    note.textContent =
+      '전체 ' + d.total + '개 중 최근 ' + d.scanned + '개만, 그것도 뒷부분만 봤습니다. 없다고 단정할 수 없습니다.'
+    list.append(note)
+  }
+
+  for (const r of d.results) {
+    const el = document.createElement('div')
+    el.className = 'item'
+    const ti = document.createElement('div')
+    ti.className = 't'
+    ti.textContent = r.title
+    const m = document.createElement('div')
+    m.className = 'm'
+    m.textContent = fmtTime(r.updatedAt) + '  ·  ' + baseName(r.cwd || '')
+    el.append(ti, m)
+    for (const h of r.hits) {
+      const sn = document.createElement('div')
+      sn.className = 'snip ' + h.role
+      sn.textContent = (h.role === 'human' ? '나: ' : 'Claude: ') + h.snippet
+      el.append(sn)
+    }
+    el.onclick = () => {
+      const s = state.sessions.find((x) => x.id === r.id) || { id: r.id, cwd: r.cwd, title: r.title }
+      openSession(s)
+    }
+    list.append(el)
+  }
+
+  $('count').textContent = d.results.length ? d.results.length + '개 대화에서 찾음' : '본문에서 못 찾았습니다'
 }
 
 // ── 탭 ────────────────────────────────────────────────────────────
@@ -1047,7 +1121,8 @@ async function ensureRun(tab) {
 // ── 설정 ──────────────────────────────────────────────────────────
 
 const DEFAULTS_KEY = 'ccdesk.defaults'
-const BLANK_SETTINGS = { model: '', permissionMode: 'acceptEdits', allowedTools: [], addDirs: [], askUser: false, askChoice: false }
+// 기본은 편집허용이고, 그 모드에서는 승인·선택지를 둘 다 물어보는 게 맞다.
+const BLANK_SETTINGS = { model: '', permissionMode: 'acceptEdits', allowedTools: [], addDirs: [], askUser: true, askChoice: true }
 
 function loadDefaults() {
   try {
@@ -1183,6 +1258,17 @@ function renderRunInfo() {
     d.title = s.addDirs.join('\n')
     el.append(d)
   }
+}
+
+/**
+ * 권한 모드에 어울리는 물어보기 기본값.
+ *
+ * 편집허용·기본은 승인이 실제로 필요한 자리라 둘 다 켠다.
+ * 전체허용은 미리 다 허용하므로 승인이 뜰 일이 없고, 읽기전용은 건드릴 게 없다 —
+ * 그 둘에서는 승인만 끈다. 선택지는 권한과 무관하므로 늘 켜둔다.
+ */
+function asksForMode(mode) {
+  return { askUser: mode === 'acceptEdits' || mode === 'default', askChoice: true }
 }
 
 /** 서로 무효로 만드는 설정 조합을 그 자리에서 알려준다. 안 그러면 켜놓고 안 된다고 여긴다. */
@@ -1450,10 +1536,14 @@ for (const r of document.querySelectorAll('input[name=scope]')) {
   }
 }
 
+$('deepBtn').onclick = runDeepSearch
+
 let qTimer
 $('q').oninput = (e) => {
   clearTimeout(qTimer)
   state.q = e.target.value
+  // 검색어가 바뀌면 옛 본문 결과는 더 이상 그 검색어의 것이 아니다.
+  if (state.deep && state.deep.q !== state.q.trim()) state.deep = null
   qTimer = setTimeout(refresh, 180)
 }
 
@@ -1480,7 +1570,14 @@ $('settingsBtn').onclick = () => {
 $('setClose').onclick = () => ($('sheet').hidden = true)
 $('setApply').onclick = applySheet
 $('setAsk').onchange = updateSheetNote
-$('setMode').onchange = updateSheetNote
+$('setMode').onchange = () => {
+  // 권한을 바꾸면 그 모드에 맞는 기본값으로 체크를 맞춰준다.
+  // 사용자가 그 뒤에 직접 끄면 그건 그대로 존중한다 — 여기서만 손댄다.
+  const d = asksForMode($('setMode').value)
+  $('setAsk').checked = d.askUser
+  $('setChoice').checked = d.askChoice
+  updateSheetNote()
+}
 $('setModel').onchange = () => {
   $('setModelCustom').hidden = $('setModel').value !== '__custom'
   if (!$('setModelCustom').hidden) $('setModelCustom').focus()
@@ -1530,7 +1627,11 @@ window.addEventListener('resize', autosize)
 {
   const d = loadDefaults()
   if ([...$('mode').options].some((o) => o.value === d.permissionMode)) $('mode').value = d.permissionMode
-  $('mode').onchange = () => saveDefaults({ ...loadDefaults(), permissionMode: $('mode').value })
+  $('mode').onchange = () => {
+    // 설정 패널과 같은 규칙을 쓴다 — 새 대화도 그 모드에 맞게 물어보도록.
+    const m = $('mode').value
+    saveDefaults({ ...loadDefaults(), permissionMode: m, ...asksForMode(m) })
+  }
 }
 
 // 응답 중에는 구동 시간이 흘러야 한다. 0.5초마다 그 줄만 다시 그린다.

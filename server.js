@@ -20,6 +20,7 @@ import { spawn } from 'node:child_process'
 import { scanAll, listUnderRoot, listSessions } from './lib/sessions.js'
 import { readMessages, readSince } from './lib/transcript.js'
 import { getTitles, setTitle, applyTitles } from './lib/titles.js'
+import { searchBodies } from './lib/search.js'
 import { normalizeHistory } from './public/normalize.js'
 
 // 이 시간 안에 파일이 갱신됐으면 어딘가에서 쓰고 있는 중일 수 있다고 본다.
@@ -200,6 +201,25 @@ async function handleApi(req, res, url) {
       roots: suggestRoots(await allSessions()),
       openSessionIds: [...runs.values()].map((r) => r.sessionId),
     })
+  }
+
+  // 본문에서 찾기 — 색인 없이 최근 것들의 뒤쪽만 훑는다.
+  if (p === '/api/search' && req.method === 'GET') {
+    const q = url.searchParams.get('q') || ''
+    const scope = url.searchParams.get('scope') || 'all'
+    const path = url.searchParams.get('path') || ''
+    if (!q.trim()) return sendJson(res, 200, { results: [], scanned: 0, total: 0, partial: false })
+
+    let sessions
+    if (scope === 'root' && path) sessions = (await listUnderRoot(path)).sessions
+    else if (scope === 'project' && path) sessions = (await listSessions(path)).sessions
+    else sessions = (await scanAll()).sessions
+
+    const out = await searchBodies(sessions, q)
+    const titles = await getTitles()
+    // 이름을 바꾼 대화는 바꾼 이름으로 보여준다.
+    out.results = out.results.map((r) => (titles[r.id] ? { ...r, title: titles[r.id] } : r))
+    return sendJson(res, 200, out)
   }
 
   // MCP 창구가 물어온다. 사용자가 누를 때까지 이 응답을 닫지 않는다.
