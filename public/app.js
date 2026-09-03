@@ -8,7 +8,7 @@
 import { applyEvent, appendHistory } from '/normalize.js'
 
 // 브라우저가 새 파일을 받았는지 눈으로 확인하려고 박아둔다. 고칠 때마다 올린다.
-const BUILD = 'b9'
+const BUILD = 'b10'
 
 const TOKEN = new URL(location.href).searchParams.get('t') || ''
 const $ = (id) => document.getElementById(id)
@@ -348,6 +348,11 @@ function activate(tab) {
     renderQueue()
     renderAsks()
     autosize()
+    // 안 보이는 동안은 안 읽었으므로 켜자마자 밀린 것을 따라잡는다.
+    if (tab.timer) {
+      tab.idleTicks = 0
+      tailOnce(tab)
+    }
     if (!tab.readonly) $('input').focus()
     markClamped(tab)
   }
@@ -542,19 +547,44 @@ function renderReadonlyBar(tab) {
  * 기록 파일 뒤에 붙는 줄을 따라 읽는다. 읽기만 한다.
  * 우리가 이 탭에서 직접 대화를 시작하면(runId 가 생기면) SSE 가 맡으므로 쉰다 — 안 그러면 두 번 들어온다.
  */
+/** 한 번만 따라 읽는다. 새 줄이 있었으면 true. */
+async function tailOnce(tab) {
+  if (tab.runId || !tab.sessionId) return false
+  try {
+    const data = await api('/api/sessions/' + encodeURIComponent(tab.sessionId) + '/messages?after=' + tab.offset)
+    if (!data.records || !data.records.length) return false
+    tab.offset = data.offset
+    appendHistory(tab.messages, data.records)
+    scheduleRender(tab)
+    return true
+  } catch {
+    // 파일이 사라졌거나 서버가 멎었다. 다음 회차에 다시 시도한다.
+    return false
+  }
+}
+
+/**
+ * 기록 파일 뒤에 붙는 줄을 따라 읽는다. 읽기만 한다.
+ *
+ * 탭을 열 때마다 3초 폴링을 하나씩 늘리면 열어둔 만큼 쌓인다. 그래서
+ *  - **보이는 탭만** 읽는다(탭을 켤 때 곧바로 한 번 따라잡는다)
+ *  - 창이 가려져 있으면 쉰다
+ *  - 새 줄이 한동안 없으면 간격을 늘린다. 다시 오면 곧바로 되돌린다
+ */
 function startTail(tab) {
   if (tab.timer) return
+  tab.idleTicks = 0
   tab.timer = setInterval(async () => {
-    if (tab.runId || !tab.sessionId) return
-    try {
-      const data = await api('/api/sessions/' + encodeURIComponent(tab.sessionId) + '/messages?after=' + tab.offset)
-      if (!data.records || !data.records.length) return
-      tab.offset = data.offset
-      appendHistory(tab.messages, data.records)
-      scheduleRender(tab)
-    } catch {
-      /* 파일이 사라졌거나 서버가 멎었다. 다음 회차에 다시 시도한다. */
+    if (tab.runId || !tab.sessionId) return // 우리가 대화 중이면 SSE 가 맡는다
+    if (tab !== state.active) return // 안 보이는 탭은 읽지 않는다
+    if (typeof document !== 'undefined' && document.hidden) return // 창이 가려져 있다
+    // 조용하면 느리게 — 30초 넘게 새 줄이 없으면 4회에 한 번만 읽는다.
+    if (tab.idleTicks > 10 && tab.idleTicks % 4 !== 0) {
+      tab.idleTicks++
+      return
     }
+    const got = await tailOnce(tab)
+    tab.idleTicks = got ? 0 : tab.idleTicks + 1
   }, 3000)
 }
 
