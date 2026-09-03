@@ -8,7 +8,7 @@
 import { applyEvent, appendHistory } from '/normalize.js'
 
 // 브라우저가 새 파일을 받았는지 눈으로 확인하려고 박아둔다. 고칠 때마다 올린다.
-const BUILD = 'b7'
+const BUILD = 'b8'
 
 const TOKEN = new URL(location.href).searchParams.get('t') || ''
 const $ = (id) => document.getElementById(id)
@@ -107,6 +107,16 @@ function connect() {
     }
 
     applyEvent(tab.messages, payload.ev)
+
+    // 프로세스가 죽거나 오류로 끝나면 result 가 오지 않는다. 여기서 안 풀면
+    // 그 탭은 영원히 "응답 중"이 되고, 이후에 친 말이 전부 대기줄로 쌓인다.
+    // 다시 보내주지는 않는다 — 같은 이유로 또 죽을 수 있으니 사용자가 보고 정한다.
+    if (payload.ev.type === 'ccdesk' && (payload.ev.level === 'exit' || payload.ev.level === 'error') && tab.busy) {
+      tab.busy = false
+      tab.startedAt = 0
+      if (tab === state.active) renderRunInfo()
+    }
+
     if (payload.ev.type === 'result') {
       tab.busy = false
       tab.startedAt = 0
@@ -1081,12 +1091,11 @@ function updateSheetNote() {
   const asking = $('setAsk').checked
   const mode = $('setMode').value
   const el = $('setNote')
+  // 서로 부딪히는 조합일 때만 적는다. 기본 상태까지 설명하면 잔소리가 된다.
   if (asking && mode === 'bypassPermissions') {
     el.textContent = '전체허용은 전부 미리 허용하는 모드라 물어볼 일이 없습니다. 물어보게 하려면 기본이나 편집허용을 고르세요.'
   } else if (asking && mode === 'plan') {
     el.textContent = '읽기전용은 편집·실행을 아예 안 하므로 물어볼 일이 거의 없습니다.'
-  } else if (!asking && mode !== 'bypassPermissions') {
-    el.textContent = '승인을 안 물어보므로, 승인이 필요한 도구는 되묻지 않고 거부됩니다.'
   } else {
     el.textContent = ''
   }
@@ -1244,12 +1253,20 @@ async function deliver(tab, text, imgs) {
   }
 }
 
-/** 앞 턴이 끝나면 줄 선 것 하나를 내보낸다. */
+/**
+ * 앞 턴이 끝나면 줄 선 것을 **하나로 합쳐** 내보낸다.
+ * 하나씩 차례로 보내면 기다리는 동안 되풀이해 친 말이 여러 턴으로 나가버린다.
+ */
 function flushQueue(tab) {
   if (tab.busy || !tab.queue.length) return
-  const next = tab.queue.shift()
+  const items = tab.queue.splice(0, tab.queue.length)
+  const text = items
+    .map((i) => i.text)
+    .filter((t) => t && t.trim())
+    .join('\n\n')
+  const images = items.flatMap((i) => i.images || [])
   renderQueue()
-  deliver(tab, next.text, next.images)
+  deliver(tab, text, images)
 }
 
 /** 대기 중인 것들. 누르면 입력칸으로 되돌려 고칠 수 있다. */
@@ -1263,7 +1280,16 @@ function renderQueue() {
 
   const head = document.createElement('div')
   head.className = 'qhead'
-  head.textContent = '대기 중 ' + q.length + '개 · 누르면 다시 고칠 수 있습니다'
+  const label = document.createElement('span')
+  label.textContent = '대기 중 ' + q.length + '개 · 다음 턴에 하나로 합쳐 나갑니다 · 누르면 고칠 수 있습니다'
+  const clear = document.createElement('button')
+  clear.className = 'qclear'
+  clear.textContent = '모두 지우기'
+  clear.onclick = () => {
+    tab.queue.length = 0
+    renderQueue()
+  }
+  head.append(label, clear)
   box.append(head)
 
   q.forEach((item, i) => {

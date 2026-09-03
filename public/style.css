@@ -553,3 +553,23 @@ details.tool > summary .why { color: var(--bad); }
 .ask-foot button:hover { border-color: var(--accent); }
 .sheet .chk { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); }
 .diag { margin-top: 8px; font-size: 10px; color: #5d646e; line-height: 1.5; }
+
+.sheet .chkrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.queue .qhead { display: flex; align-items: center; gap: 8px; }
+.queue .qclear {
+  margin-left: auto;
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dim);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.queue .qclear:hover { color: var(--bad); border-color: var(--bad); }
