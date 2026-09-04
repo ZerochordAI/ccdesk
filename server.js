@@ -22,6 +22,7 @@ import { readMessages, readSince } from './lib/transcript.js'
 import { getTitles, setTitle, applyTitles } from './lib/titles.js'
 import { searchBodies } from './lib/search.js'
 import { normalizeHistory } from './public/normalize.js'
+import { getProvider, listProviders, sessionKey, shutdownProviders } from './lib/providers/index.js'
 
 // 이 시간 안에 파일이 갱신됐으면 어딘가에서 쓰고 있는 중일 수 있다고 본다.
 // 확실히 아는 방법은 없다 — 어디까지나 "최근 활동" 표시다.
@@ -102,7 +103,8 @@ function authorized(req, url) {
 
 /** R6: 모든 이벤트에 runId 를 붙여 하나의 SSE 로 흘린다. */
 function broadcast(runId, ev) {
-  const data = 'data: ' + JSON.stringify({ runId, ev }) + '\n\n'
+  const provider = runs.get(runId)?.provider || 'claude'
+  const data = 'data: ' + JSON.stringify({ runId, provider, ev }) + '\n\n'
   for (const res of clients) {
     try {
       res.write(data)
@@ -119,9 +121,10 @@ function finishAsk(askId, answer) {
   asks.delete(askId)
   clearTimeout(rec.timer)
   try {
-    sendJson(rec.res, 200, answer)
+    if (rec.answer) rec.answer(answer)
+    else sendJson(rec.res, 200, answer)
   } catch {
-    /* MCP 쪽이 이미 갔으면 그만이다 */
+    /* provider 쪽이 이미 갔으면 그만이다 */
   }
   broadcast(rec.runId, { type: 'ccdesk', level: 'ask-done', askId })
   return true
@@ -180,26 +183,37 @@ function suggestRoots(sessions) {
 async function handleApi(req, res, url) {
   const p = url.pathname
 
+  if (p === '/api/providers' && req.method === 'GET') {
+    return sendJson(res, 200, { providers: listProviders() })
+  }
+
   if (p === '/api/scan' && req.method === 'GET') {
     const scope = url.searchParams.get('scope') || 'all'
     const path = url.searchParams.get('path') || ''
     const q = url.searchParams.get('q') || ''
-    let sessions
-    if (scope === 'root' && path) sessions = (await listUnderRoot(path)).sessions
-    else if (scope === 'project' && path) sessions = (await listSessions(path)).sessions
-    else sessions = (await scanAll()).sessions
+    const requested = url.searchParams.get('provider') || 'all'
+    const selected = requested === 'all' ? listProviders().map((x) => x.id) : [requested]
+    const settled = await Promise.allSettled(selected.map(async (id) => {
+      const provider = getProvider(id)
+      if (!provider) throw new Error(`알 수 없는 provider: ${id}`)
+      return provider.listSessions({ scope, path, query: q })
+    }))
+    let sessions = settled.flatMap((x) => x.status === 'fulfilled' ? x.value : [])
+    const providerErrors = settled.flatMap((x, i) => x.status === 'rejected' ? [{ provider: selected[i], error: x.reason?.message || String(x.reason) }] : [])
     const now = Date.now()
     const titles = await getTitles()
     // 이름을 먼저 입히고 나서 걸러야, 사용자가 붙인 이름으로도 검색된다.
-    const named = applyTitles(sessions, titles)
+    const named = applyTitles(sessions, titles).sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
+    const rootSessions = [...(await allSessions()), ...sessions.filter((s) => s.provider === 'codex')]
     return sendJson(res, 200, {
       scope,
       path,
       sessions: named
         .filter((s) => matchQuery(s, q))
         .map((s) => ({ ...s, recentlyActive: now - Date.parse(s.mtime) < LIVE_WINDOW_MS })),
-      roots: suggestRoots(await allSessions()),
-      openSessionIds: [...runs.values()].map((r) => r.sessionId),
+      roots: suggestRoots(rootSessions),
+      openSessionIds: [...runs.values()].map((r) => sessionKey(r.provider, r.sessionId)),
+      providerErrors,
     })
   }
 
@@ -290,7 +304,8 @@ async function handleApi(req, res, url) {
   const tm = p.match(/^\/api\/sessions\/([^/]+)\/title$/)
   if (tm && req.method === 'PUT') {
     const b = await readBody(req)
-    const saved = await setTitle(decodeURIComponent(tm[1]), b.title)
+    const provider = url.searchParams.get('provider') || 'claude'
+    const saved = await setTitle(sessionKey(provider, decodeURIComponent(tm[1])), b.title)
     cache = null // 목록 캐시를 비워 다음 조회에 바로 반영되게
     return sendJson(res, 200, { title: saved, renamed: Boolean(saved) })
   }
@@ -298,6 +313,17 @@ async function handleApi(req, res, url) {
   const mm = p.match(/^\/api\/sessions\/([^/]+)\/messages$/)
   if (mm && req.method === 'GET') {
     const id = decodeURIComponent(mm[1])
+    const providerId = url.searchParams.get('provider') || 'claude'
+    const provider = getProvider(providerId)
+    if (!provider) return sendJson(res, 404, { error: '알 수 없는 provider입니다' })
+    if (providerId === 'codex') {
+      try {
+        const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') || 40)))
+        return sendJson(res, 200, await provider.readMessages(id, { limit }))
+      } catch (error) {
+        return sendJson(res, 404, { error: error.message })
+      }
+    }
     const s = (await allSessions()).find((x) => x.id === id)
     if (!s) return sendJson(res, 404, { error: '세션을 찾을 수 없습니다' })
     // 따라 읽기: offset 뒤에 붙은 줄만. 가공하지 않은 기록을 그대로 준다 —
@@ -325,12 +351,15 @@ async function handleApi(req, res, url) {
 
   if (p === '/api/runs' && req.method === 'POST') {
     const b = await readBody(req)
+    const providerId = b.provider || 'claude'
+    const provider = getProvider(providerId)
+    if (!provider) return sendJson(res, 400, { error: '알 수 없는 provider입니다' })
     if (!b.cwd || typeof b.cwd !== 'string') return sendJson(res, 400, { error: 'cwd 가 필요합니다' })
     if (!existsSync(b.cwd)) return sendJson(res, 400, { error: '경로가 없습니다: ' + b.cwd })
     // R5: 이미 열려 있으면 그 run 을 돌려준다. 한 jsonl 에 두 프로세스를 붙이지 않는다.
     if (b.sessionId) {
       for (const [id, r] of runs) {
-        if (r.sessionId === b.sessionId) return sendJson(res, 200, { runId: id, sessionId: r.sessionId, existing: true })
+        if (r.provider === providerId && r.sessionId === b.sessionId) return sendJson(res, 200, { runId: id, sessionId: r.sessionId, provider: providerId, existing: true })
       }
     }
     const mode = PERMISSION_MODES.includes(b.permissionMode) ? b.permissionMode : 'acceptEdits'
@@ -343,7 +372,7 @@ async function handleApi(req, res, url) {
     let mcpConfigPath = null
     let permissionPromptTool = null
     const askSecret = randomUUID()
-    if (b.askUser || b.askChoice) {
+    if (providerId === 'claude' && (b.askUser || b.askChoice)) {
       const cfg = {
         mcpServers: {
           ccdesk: {
@@ -367,35 +396,54 @@ async function handleApi(req, res, url) {
       if (b.askUser) permissionPromptTool = 'mcp__ccdesk__approve'
     }
 
-    const run = new Run({
-      cwd: b.cwd,
-      sessionId: b.sessionId || null,
-      permissionMode: mode,
-      allowedTools: Array.isArray(b.allowedTools) ? b.allowedTools : [],
-      model: b.model || null,
-      addDirs: dirs,
-      mcpConfigPath,
-      permissionPromptTool,
-    })
+    const run = providerId === 'claude'
+      ? provider.createRun({
+          cwd: b.cwd, sessionId: b.sessionId || null, permissionMode: mode,
+          allowedTools: Array.isArray(b.allowedTools) ? b.allowedTools : [], model: b.model || null,
+          addDirs: dirs, mcpConfigPath, permissionPromptTool,
+        })
+      : provider.createRun({
+          cwd: b.cwd, sessionId: b.sessionId || null,
+          settings: {
+            model: b.model || null,
+            access: b.access || (mode === 'plan' ? 'readOnly' : mode === 'bypassPermissions' ? 'fullAccess' : 'workspaceWrite'),
+            approvalPolicy: b.askUser === false ? 'never' : null,
+            ephemeral: Boolean(b.ephemeral),
+          },
+        })
     run.on('event', (ev) => {
       const rec = runs.get(runId)
       if (rec) rec.sessionId = run.sessionId
+      if (ev.type === 'ccdesk-internal-ask' && ev.ask) {
+        const askId = ev.ask.id
+        const pending = {
+          runId,
+          kind: 'permission',
+          answer: (answer) => run.answer?.(askId, answer),
+          at: Date.now(),
+        }
+        pending.timer = setTimeout(() => finishAsk(askId, { behavior: 'deny', message: '시간이 지나 자동으로 거부했습니다' }), 10 * 60 * 1000)
+        asks.set(askId, pending)
+        broadcast(runId, { type: 'ccdesk', level: 'ask', ask: ev.ask })
+        return
+      }
       // 턴이 끝났으면 아직 떠 있는 승인 물음은 의미가 없다.
       // 안 닫으면 카드가 화면에 남고 MCP 쪽은 시간이 다 갈 때까지 붙들려 있는다.
       if (ev.type === 'result') cancelAsksOf(runId)
       broadcast(runId, ev)
     })
     // R4: 여기서는 아직 프로세스가 뜨지 않는다. 첫 send() 에서 뜬다.
-    runs.set(runId, { run, cwd: b.cwd, sessionId: run.sessionId, askSecret })
+    runs.set(runId, { run, cwd: b.cwd, sessionId: run.sessionId, askSecret, provider: providerId })
     // 실제로 적용된 값을 돌려준다 — 버려진 항목이 있으면 화면이 그대로 보여줄 수 있게.
     return sendJson(res, 200, {
       runId,
       sessionId: run.sessionId,
+      provider: providerId,
       permissionMode: run.permissionMode,
       model: run.model,
       allowedTools: run.allowedTools,
       addDirs: run.addDirs,
-      askUser: Boolean(permissionPromptTool),
+      askUser: providerId === 'codex' ? b.askUser !== false : Boolean(permissionPromptTool),
       askChoice: Boolean(b.askChoice),
     })
   }
@@ -409,18 +457,18 @@ async function handleApi(req, res, url) {
       const images = Array.isArray(b.images) ? b.images : []
       if ((!b.text || !String(b.text).trim()) && !images.length) return sendJson(res, 400, { error: '보낼 내용이 없습니다' })
       // R3: 사용자 입력은 stdin 으로만 간다. 이미지도 base64 로 stdin 에 실린다.
-      const ok = rec.run.send(String(b.text || ''), images)
+      const ok = await rec.run.send(String(b.text || ''), images)
       if (!ok) return sendJson(res, 409, { error: '아직 앞 턴이 끝나지 않았습니다' })
       return sendJson(res, 200, { ok: true, sessionId: rec.run.sessionId })
     }
     if (rm[2] === '/interrupt' && req.method === 'POST') {
       // 승인을 기다리느라 멈춰 있을 수 있다. 먼저 풀어줘야 중단이 먹는다.
       cancelAsksOf(rm[1])
-      return sendJson(res, 200, { ok: rec.run.interrupt() })
+      return sendJson(res, 200, { ok: await rec.run.interrupt() })
     }
     if (!rm[2] && req.method === 'DELETE') {
       cancelAsksOf(rm[1])
-      rec.run.stop()
+      await rec.run.stop()
       runs.delete(rm[1])
       return sendJson(res, 200, { ok: true })
     }
@@ -567,6 +615,7 @@ process.on('unhandledRejection', (e) => console.error('처리되지 않은 거�
 function shutdown() {
   for (const id of [...asks.keys()]) finishAsk(id, { behavior: 'deny', message: 'ccdesk 가 종료됩니다' })
   for (const [, r] of runs) r.run.stop()
+  shutdownProviders().catch(() => {})
   process.exit(0)
 }
 process.on('SIGINT', shutdown)

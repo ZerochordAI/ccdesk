@@ -1,5 +1,9 @@
 # ccdesk — v1 설계 (계약)
 
+> 이 문서는 Claude 중심 v1의 검증된 계약을 보존한다. Codex provider 확장과 공통 계약은
+> [`SPEC.md`](SPEC.md), [`spec/provider-contract.md`](spec/provider-contract.md),
+> [`spec/codex-app-server.md`](spec/codex-app-server.md)를 따른다.
+
 > `README.md` 의 "CLI 를 어떻게 다루는가" 를 먼저 읽을 것. 이 문서는 그 위에 얹는 **v1 의 고정 계약**이다.
 > 여기 적힌 **규칙(R1~R10)** 은 구현하다 편해 보인다고 깨지 말 것.
 > 깨야 할 이유가 생기면 코드보다 **이 문서를 먼저 고친다.**

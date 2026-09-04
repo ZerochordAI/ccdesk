@@ -174,6 +174,25 @@ function appendText(list, kind, text) {
   else m.blocks.push({ type: kind, text })
 }
 
+function codexTool(list, item, done) {
+  if (!item) return
+  let m = [...list].reverse().find((x) => x.role === 'assistant' && x.streaming)
+  if (!m) {
+    m = { id: `codex-tools-${item.id || list.length}`, role: 'assistant', ts: new Date().toISOString(), blocks: [], streaming: !done }
+    list.push(m)
+  }
+  let tool = m.blocks.find((b) => b.type === 'tool' && b.id === item.id)
+  if (!tool) {
+    tool = { type: 'tool', id: item.id || `codex-tool-${m.blocks.length}`, name: item.command || item.server || item.type || '도구', input: item.command || item.arguments || item.changes || item.input || {}, result: null, isError: false, state: 'running' }
+    m.blocks.push(tool)
+  }
+  if (done) {
+    tool.result = item.aggregatedOutput || item.output || item.result || ''
+    tool.isError = item.status === 'failed'
+    tool.state = 'done'
+  }
+}
+
 /**
  * 실시간 이벤트 하나를 메시지 배열에 반영한다. 배열을 제자리에서 고친다.
  *
@@ -186,6 +205,28 @@ export function applyEvent(list, ev) {
   if (!ev || typeof ev !== 'object') return list
 
   switch (ev.type) {
+    case 'codex_delta': {
+      const m = liveAssistant(list, ev.id)
+      const last = m.blocks[m.blocks.length - 1]
+      if (last && last.type === 'text') last.text += ev.text || ''
+      else m.blocks.push({ type: 'text', text: ev.text || '' })
+      break
+    }
+
+    case 'codex_item': {
+      const item = ev.item || {}
+      if (item.type === 'agentMessage') {
+        const text = typeof item.text === 'string' ? item.text : ''
+        if (ev.phase === 'completed' && text) upsertAssistant(list, { id: item.id, ts: new Date().toISOString(), content: text }, 'replace')
+      } else if (/commandExecution|fileChange|mcpToolCall|dynamicToolCall/i.test(item.type || '')) {
+        codexTool(list, item, ev.phase === 'completed')
+      }
+      break
+    }
+
+    case 'codex_usage':
+      break
+
     case 'assistant':
       // 이벤트가 완성본을 통째로 싣고 온다 — 더하지 말고 갈아끼운다.
       if (ev.message)
@@ -250,7 +291,7 @@ export function applyEvent(list, ev) {
     }
 
     case 'ccdesk':
-      if (ev.level === 'exit') pushNotice(list, 'exit', `claude 프로세스가 종료됐습니다 (코드 ${ev.code})`)
+      if (ev.level === 'exit') pushNotice(list, 'exit', `${ev.provider === 'codex' ? 'Codex' : 'Claude'} 프로세스가 종료됐습니다 (코드 ${ev.code})`)
       else pushNotice(list, ev.level === 'error' ? 'error' : 'stderr', ev.text)
       break
   }

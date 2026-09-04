@@ -8,7 +8,7 @@
 import { applyEvent, appendHistory } from '/normalize.js'
 
 // 브라우저가 새 파일을 받았는지 눈으로 확인하려고 박아둔다. 고칠 때마다 올린다.
-const BUILD = 'b15'
+const BUILD = 'b16'
 
 const TOKEN = new URL(location.href).searchParams.get('t') || ''
 const $ = (id) => document.getElementById(id)
@@ -18,11 +18,13 @@ const SEP_RE = new RegExp('[' + String.fromCharCode(92, 92) + '/]')
 const baseName = (p) => p.split(SEP_RE).filter(Boolean).pop() || p
 
 const state = {
+  provider: 'all',
   scope: 'all',
   path: '',
   q: '',
   sessions: [],
   roots: [],
+  providerErrors: [],
   expanded: new Set(), // 펼쳐둔 프로젝트 경로. 기본은 전부 접힘 — 처음엔 경로만 보인다.
   deep: null, // 본문 검색 결과. null 이면 평소 목록을 보여준다
   tabs: [], // { id, sessionId, cwd, title, runId, messages, cursor, hasMore, follow, draft, unread, busy, el }
@@ -49,6 +51,7 @@ let sseOk = false
 function renderDiag() {
   const t = state.active
   const bits = ['build ' + BUILD, sseOk ? 'SSE 연결' : 'SSE 끊김']
+  if (state.providerErrors.length) bits.push(state.providerErrors.map((x) => `${x.provider} 오류`).join(', '))
   if (t) {
     bits.push('따라가기 ' + (t.follow ? '켬' : '끔'))
     if (t.busy) bits.push('응답 중')
@@ -138,19 +141,29 @@ function connect() {
 
 // ── 목록 ──────────────────────────────────────────────────────────
 
+let scanController = null
+let scanSequence = 0
 async function refresh() {
-  const p = new URLSearchParams({ scope: state.scope, path: state.path, q: state.q })
+  if (scanController) scanController.abort()
+  scanController = new AbortController()
+  const sequence = ++scanSequence
+  const p = new URLSearchParams({ provider: state.provider, scope: state.scope, path: state.path, q: state.q })
   try {
-    const data = await api('/api/scan?' + p)
+    const data = await api('/api/scan?' + p, { signal: scanController.signal })
+    if (sequence !== scanSequence) return
     state.sessions = data.sessions
     state.roots = data.roots
+    state.providerErrors = data.providerErrors || []
   } catch (e) {
+    if (e.name === 'AbortError' || sequence !== scanSequence) return
     state.sessions = []
+    state.providerErrors = []
     $('count').textContent = e.message
     return
   }
   renderRoots()
   renderList()
+  $('deepBtn').hidden = state.provider === 'codex'
 }
 
 function fmtTime(iso) {
@@ -163,6 +176,7 @@ function fmtTime(iso) {
 }
 
 function fmtSize(b) {
+  if (b == null) return ''
   return b > 1048576 ? (b / 1048576).toFixed(1) + 'MB' : Math.round(b / 1024) + 'KB'
 }
 
@@ -192,7 +206,7 @@ function renderList() {
 
   const groups = new Map()
   for (const s of state.sessions) {
-    const key = s.cwd || s.encodedDir
+    const key = s.cwd || s.encodedDir || '(경로 없음)'
     if (!groups.has(key)) groups.set(key, [])
     groups.get(key).push(s)
   }
@@ -233,13 +247,16 @@ function renderList() {
     box.className = 'items'
     for (const s of items) {
       const el = document.createElement('div')
-      el.className = 'item' + (state.tabs.some((t) => t.sessionId === s.id) ? ' open' : '')
+      el.className = 'item' + (state.tabs.some((t) => t.provider === s.provider && t.sessionId === s.id) ? ' open' : '')
       const t = document.createElement('div')
       t.className = 't'
-      t.textContent = s.title
+      const badge = document.createElement('span')
+      badge.className = 'provider ' + (s.provider || 'claude')
+      badge.textContent = s.provider === 'codex' ? 'Codex' : 'Claude'
+      t.append(badge, document.createTextNode(s.title))
       const m = document.createElement('div')
       m.className = 'm'
-      m.textContent = fmtTime(s.updatedAt) + '  ·  ' + fmtSize(s.bytes) + (s.gitBranch ? '  ·  ' + s.gitBranch : '')
+      m.textContent = [fmtTime(s.updatedAt), fmtSize(s.bytes), s.gitBranch].filter(Boolean).join('  ·  ')
       if (s.recentlyActive) {
         const live = document.createElement('span')
         live.className = 'live'
@@ -253,7 +270,7 @@ function renderList() {
       pen.title = s.renamed ? '이름 바꾸기 (원래: ' + s.originalTitle + ')' : '이름 바꾸기'
       pen.onclick = (e) => {
         e.stopPropagation()
-        renameSession(s.id, s.title)
+        renameSession(s.provider || 'claude', s.id, s.title)
       }
       t.append(pen)
 
@@ -274,7 +291,7 @@ function renderList() {
  * 기록 파일에는 쓰지 않는다 — CLI 가 쥐고 있는 파일이라 끼어들면 위험하다.
  * 바꾼 이름은 ccdesk 가 따로 보관하므로 터미널 쪽 목록에는 원래 제목이 그대로 남는다.
  */
-async function renameSession(sessionId, current) {
+async function renameSession(provider, sessionId, current) {
   if (!sessionId) {
     alert('아직 시작하지 않은 대화입니다. 한 번 보내고 나서 이름을 붙일 수 있습니다.')
     return
@@ -282,12 +299,12 @@ async function renameSession(sessionId, current) {
   const next = prompt('대화 이름 (비우면 원래 제목으로 돌아갑니다)', current || '')
   if (next === null) return
   try {
-    const data = await api('/api/sessions/' + encodeURIComponent(sessionId) + '/title', {
+    const data = await api('/api/sessions/' + encodeURIComponent(sessionId) + '/title?provider=' + encodeURIComponent(provider), {
       method: 'PUT',
       body: JSON.stringify({ title: next }),
     })
     for (const t of state.tabs) {
-      if (t.sessionId === sessionId && data.title) t.title = data.title
+      if (t.provider === provider && t.sessionId === sessionId && data.title) t.title = data.title
     }
     renderTabs()
     await refresh()
@@ -357,7 +374,7 @@ function renderDeep(list) {
       el.append(sn)
     }
     el.onclick = () => {
-      const s = state.sessions.find((x) => x.id === r.id) || { id: r.id, cwd: r.cwd, title: r.title }
+      const s = state.sessions.find((x) => x.provider === (r.provider || 'claude') && x.id === r.id) || { provider: r.provider || 'claude', id: r.id, cwd: r.cwd, title: r.title }
       openSession(s)
     }
     list.append(el)
@@ -395,7 +412,7 @@ function renderTabs() {
     el.onclick = () => activate(tab)
     el.ondblclick = (e) => {
       e.preventDefault()
-      renameSession(tab.sessionId, tab.title)
+      renameSession(tab.provider, tab.sessionId, tab.title)
     }
     el.title = (tab.cwd || '') + '\n두 번 누르면 이름을 바꿉니다'
     bar.append(el)
@@ -459,14 +476,14 @@ function closeTab(tab) {
   renderList()
 }
 
-function newTab({ sessionId, cwd, title }) {
+function newTab({ provider = 'claude', sessionId, cwd, title }) {
   const el = document.createElement('div')
   el.className = 'pane'
   el.hidden = true
   $('panes').append(el)
   const tab = {
     id: Math.random().toString(36).slice(2),
-    sessionId, cwd, title,
+    provider, sessionId, cwd, title,
     runId: null, messages: [], cursor: null, hasMore: false,
     follow: true, draft: '', unread: false, busy: false, el,
     images: [], // 보낼 때 함께 실을 그림
@@ -499,9 +516,10 @@ function newTab({ sessionId, cwd, title }) {
 
 async function openSession(s) {
   // R5: 이미 열려 있으면 그 탭으로.
-  const open = state.tabs.find((t) => t.sessionId === s.id)
+  const provider = s.provider || 'claude'
+  const open = state.tabs.find((t) => t.provider === provider && t.sessionId === s.id)
   if (open) return activate(open)
-  const tab = newTab({ sessionId: s.id, cwd: s.cwd, title: s.title })
+  const tab = newTab({ provider, sessionId: s.id, cwd: s.cwd, title: s.title })
   await loadMessages(tab, null)
 }
 
@@ -509,6 +527,7 @@ async function loadMessages(tab, before) {
   try {
     const p = new URLSearchParams({ limit: '40' })
     if (before != null) p.set('before', String(before))
+    p.set('provider', tab.provider)
     const data = await api('/api/sessions/' + encodeURIComponent(tab.sessionId) + '/messages?' + p)
     tab.messages = before == null ? data.messages : data.messages.concat(tab.messages)
     tab.cursor = data.cursor
@@ -525,7 +544,7 @@ async function loadMessages(tab, before) {
       }
       // 따라 읽기는 **항상** 켠다. "열 때 마침 활동 중이었나"로 정하면,
       // 조용한 틈에 연 탭은 영영 갱신되지 않는다.
-      startTail(tab)
+      if (tab.provider === 'claude') startTail(tab)
     }
     render(tab, before != null)
   } catch (e) {
@@ -1111,7 +1130,7 @@ async function ensureRun(tab) {
   if (tab.runId) return tab.runId
   // 따라 읽기 지점을 파일 끝으로 당겨둔다. 안 그러면 SSE 로 받은 턴을
   // 나중에 기록에서 또 읽어와 같은 말이 두 번 쌓인다.
-  if (tab.sessionId) {
+  if (tab.provider === 'claude' && tab.sessionId) {
     try {
       const t = await api('/api/sessions/' + encodeURIComponent(tab.sessionId) + '/messages?after=' + tab.offset)
       tab.offset = t.offset
@@ -1124,6 +1143,7 @@ async function ensureRun(tab) {
     method: 'POST',
     body: JSON.stringify({
       cwd: tab.cwd,
+      provider: tab.provider,
       sessionId: tab.sessionId,
       permissionMode: s.permissionMode,
       model: s.model || null,
@@ -1134,6 +1154,7 @@ async function ensureRun(tab) {
     }),
   })
   tab.runId = data.runId
+  tab.provider = data.provider || tab.provider
   tab.sessionId = data.sessionId
   // 서버가 걸러낸 뒤의 실제 값으로 맞춘다. 버려진 폴더가 있으면 화면에도 반영된다.
   tab.settings = {
@@ -1329,6 +1350,18 @@ function openSheet() {
   const tab = state.active
   if (!tab) return
   const s = tab.settings
+  const codex = tab.provider === 'codex'
+  for (const o of $('setModel').options) if (o.value.startsWith('claude-')) o.hidden = codex
+  $('setToolsRow').hidden = codex
+  $('setDirsRow').hidden = codex
+  $('setChoiceRow').hidden = codex
+  $('setAskRow').querySelector('span').textContent = codex ? '필요한 명령·파일 변경을 화면에서 승인하기' : '승인이 필요하면 화면에서 물어보기'
+  for (const select of [$('setMode')]) {
+    const labels = codex
+      ? { plan: '읽기 전용', default: '기본 승인', acceptEdits: '작업공간 편집', bypassPermissions: '전체 접근 (주의)' }
+      : { plan: '읽기전용 — plan', default: '기본 — default', acceptEdits: '편집허용 — acceptEdits', bypassPermissions: '전체허용 — bypassPermissions' }
+    for (const option of select.options) if (labels[option.value]) option.textContent = labels[option.value]
+  }
   const known = Object.prototype.hasOwnProperty.call(MODEL_NAMES, s.model)
   $('setModel').value = s.model === '' ? '' : known ? s.model : '__custom'
   $('setModelCustom').hidden = $('setModel').value !== '__custom'
@@ -1472,7 +1505,8 @@ async function deliver(tab, text, imgs) {
   render(tab)
   try {
     await ensureRun(tab)
-    await api('/api/runs/' + tab.runId + '/send', { method: 'POST', body: JSON.stringify({ text, images: imgs }) })
+    const sentResult = await api('/api/runs/' + tab.runId + '/send', { method: 'POST', body: JSON.stringify({ text, images: imgs }) })
+    if (sentResult.sessionId) tab.sessionId = sentResult.sessionId
   } catch (e) {
     tab.busy = false
     tab.messages.push({ id: 'e' + Date.now(), role: 'notice', blocks: [{ type: 'notice', level: 'error', text: e.message }] })
@@ -1611,7 +1645,14 @@ $('newChat').onclick = () => {
     alert('먼저 경로를 지정하세요.')
     return
   }
-  newTab({ sessionId: null, cwd, title: '새 대화' })
+  const provider = state.provider === 'codex' ? 'codex' : 'claude'
+  newTab({ provider, sessionId: null, cwd, title: provider === 'codex' ? '새 Codex 대화' : '새 Claude 대화' })
+}
+
+$('provider').onchange = (e) => {
+  state.provider = e.target.value
+  state.deep = null
+  refresh()
 }
 
 $('settingsBtn').onclick = () => {

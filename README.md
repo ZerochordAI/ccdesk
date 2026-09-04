@@ -1,8 +1,8 @@
 # ccdesk
 
-터미널 대신 쓰는 **Claude Code 전용 창**. 경로를 고르고, 지난 대화를 찾아, 이어간다.
+터미널 대신 쓰는 **Claude Code·Codex 로컬 창**. 경로를 고르고, 지난 대화를 찾아, 이어간다.
 
-> A tiny local UI for the Claude Code CLI — pick a project, browse past sessions, continue one in a
+> A tiny local UI for Claude Code and Codex — pick a project, browse past sessions, continue one in a
 > dedicated window. No Electron, no dependencies. Korean UI.
 
 ```
@@ -20,9 +20,9 @@
 
 ## 무엇인가
 
-Claude Code 는 이미 대화를 `~/.claude/projects/**/*.jsonl` 에 남긴다. ccdesk 는 그 기록을 읽어
-목록으로 보여주고, 고른 대화를 `claude --resume` 으로 이어간다. **CLI 를 감싸는 얇은 창일 뿐**이고,
-모델 호출도 인증도 전부 CLI 가 한다.
+Claude Code와 Codex는 각자 로컬에 대화 기록을 남긴다. ccdesk는 두 provider의 기록을 한 목록으로
+보여주고, 고른 대화를 원래 CLI에서 이어간다. **CLI를 감싸는 얇은 창일 뿐**이고,
+모델 호출과 인증은 각 CLI가 맡는다. Claude는 stream-json을, Codex는 공식 App Server를 사용한다.
 
 - **의존성 0** — `package.json` 에 `dependencies` 가 없다. Node 표준 모듈만 쓴다
 - **Electron 없음** — 크롬/엣지의 앱 모드(`--app=`)로 탭·주소창 없는 창을 띄운다
@@ -31,18 +31,22 @@ Claude Code 는 이미 대화를 `~/.claude/projects/**/*.jsonl` 에 남긴다. 
 ## 필요한 것
 
 - **Node.js 20 이상**
-- **Claude Code CLI** 가 설치되어 있고 `claude` 가 PATH 에 있을 것
-- 그 CLI 로 **로그인이 끝나 있을 것** (아래 참고)
+- **Claude Code CLI** 또는 **Codex CLI**가 설치되어 PATH에서 실행될 것
+- 사용할 CLI에서 **로그인이 끝나 있을 것** (아래 참고)
+
+둘 다 설치하면 에이전트 선택기에서 Claude와 Codex 기록을 함께 보거나 한쪽만 볼 수 있다.
+새 대화는 현재 선택한 에이전트로 시작하며, `Claude + Codex` 상태에서는 기존 호환을 위해 Claude가 기본이다.
 
 ## 로그인은 어떻게 하나
 
 **ccdesk 에는 로그인이 없다.** 있을 필요가 없다.
 
-ccdesk 는 자기 컴퓨터에서 `claude` 를 자식 프로세스로 띄우고, 그 프로세스는 **이미 그 컴퓨터에
-저장된 자격 증명**을 쓴다. 그래서 각자 자기 컴퓨터에서 한 번 로그인해 두면 끝이다.
+ccdesk는 자기 컴퓨터에서 `claude` 또는 `codex app-server`를 자식 프로세스로 띄우고,
+그 프로세스는 **이미 그 컴퓨터에 저장된 자격 증명**을 쓴다. 그래서 사용할 CLI에서 한 번 로그인해 두면 끝이다.
 
 ```bash
 claude          # 처음이면 로그인 절차가 뜬다 (구독 계정 또는 API 키)
+codex login     # Codex를 사용할 때
 ```
 
 - 구독(Pro/Max)으로 로그인했다면 ccdesk 도 그 계정으로 돈다
@@ -63,6 +67,43 @@ git clone https://github.com/ZerochordAI/ccdesk.git
 cd ccdesk
 node server.js
 ```
+
+설치 상태를 먼저 확인하려면:
+
+```bash
+npm run doctor
+```
+
+## 다른 컴퓨터에 설치
+
+릴리스된 npm 패키지는 다음처럼 바로 실행할 수 있다.
+
+```bash
+npx ccdesk
+```
+
+전역 명령으로 설치하려면:
+
+```bash
+npm install -g ccdesk
+ccdesk doctor
+ccdesk
+```
+
+저장소에서 만든 `.tgz` 파일을 전달받은 경우에도 설치할 수 있다.
+
+```bash
+npm install -g ./ccdesk-0.0.1.tgz
+ccdesk
+```
+
+로컬 배포 파일은 `npm run pack:local`로 만든다. 패키징 전에 테스트가 자동으로 실행된다.
+
+ccdesk는 로그인 정보를 포함해 패키징하지 않는다. 각 사용자는 자기 컴퓨터에서 사용할 CLI를 설치하고
+`claude auth login` 또는 `codex login`을 한 번 실행해야 한다. 자격 증명은 각 CLI가 관리하며 ccdesk는 읽거나 복사하지 않는다.
+
+Docker 이미지는 기본 배포 방식으로 제공하지 않는다. 이 프로그램은 호스트의 CLI, 브라우저, 로컬 세션 기록과
+자격 증명 저장소를 함께 사용하므로 컨테이너에서는 민감한 홈 디렉터리와 실행 파일을 복잡하게 마운트해야 한다.
 
 전용 창이 열리고, 터미널에 주소가 찍힌다.
 

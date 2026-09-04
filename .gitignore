@@ -22,3 +22,4 @@ HANDOFF.md
 scratchpad/
 tmp/
 *.tmp
+*.tgz
